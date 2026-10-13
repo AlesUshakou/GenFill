@@ -56,6 +56,9 @@ class Knob(object):
     def values(self):
         return list(self._values)
 
+    def setValues(self, values):
+        self._values = list(values)
+
     def setExpression(self, e):
         # Like Nuke, complain if a parent.<knob> reference doesn't exist yet.
         import re
@@ -252,7 +255,11 @@ def _all(container):
 
 
 def delete(n):
-    for holder in [_root] + _all(_root):
+    holders = [_root] + _all(_root)
+    for top in _root_nodes:
+        holders.append(top)
+        holders.extend(_all(top))
+    for holder in holders:
         if n in holder._children:
             holder._children.remove(n)
     if n in _root_nodes:

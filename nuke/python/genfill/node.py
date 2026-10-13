@@ -55,11 +55,18 @@ COMP = "gf_comp"
 COPY_ALPHA = "gf_fill_alpha"
 PREMULT = "gf_fill_premult"
 OUT_SWITCH = "gf_output_switch"
+BLANK = "gf_layer_blank"
+LAYER = "gf_layer"
 
 WRITE_NODES = (PROBE_WRITE, WRITE_SRC, WRITE_MASK, WRITE_MASK_A)
 
 SELECTION_MODES = ["Mask input", "Source alpha"]
-OUTPUT_MODES = ["Comp", "Fill only (premult)", "Bypass"]
+OUTPUT_MODES = ["Comp", "Layer", "Bypass"]
+OUTPUT_TOOLTIP = ("Comp: the fill blended over Source through the expanded, feathered selection.\n"
+                  "Layer: just the generated fill in Source's format, premultiplied by the "
+                  "expanded, feathered selection (alpha included), ready to Merge over anything. "
+                  "Like a Photoshop generative layer with its mask.\n"
+                  "Bypass: Source untouched.")
 QUALITY_MODES = ["auto", "low", "medium", "high"]
 
 PANEL_EXPR = '__import__("genfill.ui.panel", fromlist=["GenFillPanel"]).GenFillPanel()'
@@ -254,6 +261,44 @@ def _build_internals(group):
         out = nuke.nodes.Output()
         out.setInput(0, out_sw)
         _place(out, 1, 13)
+    _build_layer(group)
+
+
+def _build_layer(group):
+    """Layer output: the premultiplied fill merged over a transparent copy of
+    Source, so it has Source's format (the raw patch only has the crop's)."""
+    with group:
+        src = group.node(SRC_IN)
+        pm = group.node(PREMULT)
+        out_sw = group.node(OUT_SWITCH)
+        blank = nuke.nodes.Remove(name=BLANK)
+        blank.setInput(0, src)
+        blank["operation"].setValue("remove")
+        blank["channels"].setValue("all")
+        _place(blank, -1, 10)
+        layer = nuke.nodes.Merge2(name=LAYER)
+        layer.setInput(0, blank)    # B: empty, Source's format
+        layer.setInput(1, pm)       # A: fill premultiplied by feathered selection
+        layer["operation"].setValue("over")
+        _place(layer, -1, 11)
+        out_sw.setInput(1, layer)
+
+
+def ensure_current(group):
+    """Upgrade nodes made by older GenFill versions (called when the panel opens)."""
+    changed = False
+    if group.node(LAYER) is None and group.node(PREMULT) is not None \
+            and group.node(OUT_SWITCH) is not None and group.node(SRC_IN) is not None:
+        _build_layer(group)
+        changed = True
+    knob = group.knobs().get("gf_output")
+    if knob is not None and list(knob.values()) != OUTPUT_MODES:
+        idx = int(knob.getValue())
+        knob.setValues(OUTPUT_MODES)
+        knob.setValue(idx)
+        knob.setTooltip(OUTPUT_TOOLTIP)
+        changed = True
+    return changed
 
 
 def _add_knobs(group):
@@ -280,9 +325,7 @@ def _add_knobs(group):
     k.setTooltip("Soften the edge where the fill is blended back into the plate.")
     group.addKnob(k)
     k = nuke.Enumeration_Knob("gf_output", "output", OUTPUT_MODES)
-    k.setTooltip("Comp: fill blended over Source.\nFill only: just the generated layer, "
-                 "premultiplied by the selection (like a Photoshop generative layer).\n"
-                 "Bypass: Source untouched.")
+    k.setTooltip(OUTPUT_TOOLTIP)
     group.addKnob(k)
 
     # ---- Settings tab ----------------------------------------------------

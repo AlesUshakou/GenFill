@@ -51,6 +51,33 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(g.input(1)["replace"].value())
         self.assertEqual(g["gf_variations"].value(), 3)
 
+    def test_layer_output_has_source_format(self):
+        g = self.g
+        sw = g.node(gfnode.OUT_SWITCH)
+        layer = g.node(gfnode.LAYER)
+        self.assertIs(sw.input(1), layer)
+        self.assertEqual(layer["operation"].value(), "over")
+        self.assertIs(layer.input(1), g.node(gfnode.PREMULT))           # A: premultiplied fill
+        blank = layer.input(0)                                           # B: Source, emptied
+        self.assertEqual(blank.Class(), "Remove")
+        self.assertIs(blank.input(0), g.node(gfnode.SRC_IN))
+        self.assertEqual(g["gf_output"].values(), ["Comp", "Layer", "Bypass"])
+        # the alpha that premultiplies the fill is the feathered, expanded selection
+        self.assertIs(g.node(gfnode.COPY_ALPHA).input(1), g.node(gfnode.FEATHER))
+
+    def test_old_nodes_are_upgraded(self):
+        g = self.g
+        with g:
+            fake_nuke.delete(g.node(gfnode.LAYER))
+            fake_nuke.delete(g.node(gfnode.BLANK))
+        g.node(gfnode.OUT_SWITCH).setInput(1, g.node(gfnode.PREMULT))
+        g["gf_output"].setValues(["Comp", "Fill only (premult)", "Bypass"])
+        g["gf_output"].setValue(1)
+        self.assertTrue(gfnode.ensure_current(g))
+        self.assertIs(g.node(gfnode.OUT_SWITCH).input(1), g.node(gfnode.LAYER))
+        self.assertEqual(g["gf_output"].value(), "Layer")
+        self.assertFalse(gfnode.ensure_current(g))      # idempotent
+
     def test_generate_and_select(self):
         g = self.g
         self.assertTrue(engine.generate(g, "a red vintage car"))

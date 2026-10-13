@@ -150,6 +150,11 @@ def _internal(node, name):
 
 def refresh_result(node):
     """Point the internal Read/Reformat/Transform at the selected variation."""
+    try:
+        if gfnode.ensure_current(node):
+            gflog.info("upgraded %s to the current GenFill node layout", node.fullName())
+    except Exception:
+        gflog.exception("could not upgrade %s", node.fullName())
     st = get_state(node)
     sel = gfstate.selected(st)
     if sel is None:

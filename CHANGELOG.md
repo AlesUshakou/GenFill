@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 - 2026-10-12
+
+- **Layer** output (replaces "Fill only"): just the generated fill in Source's format,
+  premultiplied by the expanded + feathered selection, with that as alpha. "Fill only" output
+  the raw patch in the crop's own format, so it came out black and oddly cropped.
+- Existing GenerativeFill nodes are upgraded automatically when their panel opens.
+- README: Privacy and security section (what runs locally, what touches the network, where
+  data is stored).
+
 ## 0.4.7 - 2026-10-12
 
 - Fix: self-test failed with "The paging file is too small" (os error 1455) while loading T5.

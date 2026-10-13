@@ -15,7 +15,7 @@ Photoshop.
 | Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Enter generates. |
 | Empty prompt = remove and fill from surroundings | Same. With Stability AI this uses their dedicated *Erase* model. |
 | 3 variations per generation, browse with ‹ › | Same: thumbnail grid of every generation (newest first), ‹ 1/6 › arrows, right-click to reuse a prompt, reveal or delete |
-| Generative layer with a layer mask | Output **Comp** (fill blended over the plate through the feathered selection) or **Fill only** (premultiplied layer) |
+| Generative layer with a layer mask | Output **Comp** (fill blended over the plate through the expanded, feathered selection) or **Layer** (just the fill, in the plate's format, premultiplied by that selection, with alpha) |
 | Model picker | **Stability AI** (inpaint / erase), **OpenAI GPT Image**, or **Offline Preview** (no AI; tests the pipeline for free) |
 
 What makes it work as a Nuke node:
@@ -61,7 +61,7 @@ now; on macOS/Linux add the repo's `nuke` folder to `NUKE_PATH`.
 3. In the GenerativeFill panel, type a prompt (*"a weathered wooden bench"*), or leave it
    empty to remove the object. Press **Generate**.
 4. Click thumbnails or use ‹ › to choose a variation. Generate again to add more.
-5. Tweak **expand** / **feather** to blend, and set **output** to *Comp* or *Fill only*.
+5. Tweak **expand** / **feather** to blend, and set **output** to *Comp* or *Layer*.
 
 The fill is generated on the current frame and held. The *reference frame* on the Settings tab
 shows which frame a variation came from.
@@ -93,6 +93,31 @@ shows which frame a variation came from.
 > **Data note:** cloud backends upload the crop (not the whole frame) to that provider. Check
 > your client / TPN rules before using them on production plates. The Local model never sends anything off
 > your machine.
+
+## Privacy and security
+
+**Local: FLUX.1 Fill runs entirely on your machine.** The crop, mask, prompt and results go
+from Nuke to the hidden helper process over a private pipe and are processed on your GPU. The
+helper makes no network connections: it is started with Hugging Face's offline mode on and
+telemetry off, and only reads model files from `%USERPROFILE%\GenFill-LocalAI`. You can confirm
+this by blocking `GenFill-LocalAI\python\...\python.exe` in Windows Firewall; generation keeps
+working.
+
+Network is used only by the **installer**, and only to download: uv (GitHub), Python packages
+(PyPI and the official PyTorch index) and the model files (Hugging Face, GitHub). Nothing about
+your images or prompts is sent.
+
+**Cloud models (Stability AI, OpenAI) are different:** the crop around your selection and the
+prompt are uploaded to that company. Use them only when your client allows it.
+
+**Where your data ends up on disk:**
+
+| What | Where |
+|---|---|
+| Crops, masks, generated variations | `genfill_cache\` next to the saved script (or `%TEMP%\genfill_cache` if unsaved). If your scripts live in OneDrive/Dropbox, this folder syncs with them; set **cache folder** on the Settings tab to keep it local. |
+| GenFill log (includes prompts) | `test_output\genfill.log` in the repo when installed from it, else `~\.nuke\genfill\genfill.log` |
+| Helper / installer logs | `%USERPROFILE%\GenFill-LocalAI\logs\` |
+| API keys (cloud models only) | `~\.nuke\genfill\config.json`, never in .nk scripts |
 
 ## Roadmap
 
