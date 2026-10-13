@@ -2,6 +2,9 @@
 
 ## 0.7.1 - 2026-10-13
 
+- README rewritten for the current build, with a full colour science section (encode / generate /
+  decode, the three encodings, Auto decisions, float precision, limits) and troubleshooting.
+
 - **Roto tools now appear in the Viewer when the GenerativeFill panel is open** (with *selection
   from* = Shapes). Nuke only shows a Roto's Viewer tools while that Roto's own panel is open, so
   GenFill opens the built-in Roto's panel as a hidden floating window: you get the tools and the
