@@ -11,7 +11,7 @@ Photoshop.
 
 | Photoshop | GenFill in Nuke |
 |---|---|
-| Make a selection (lasso / marquee) | Draw in the **GenFillSelection** Roto that's created with the node (or use the Source alpha / any matte in the Mask input) |
+| Make a selection (lasso / marquee) | **✏ Draw Selection** right in the node's panel: Roto shapes drawn on the node itself, with the shape list under the prompt bar (or use any matte in the Mask input, or the Source alpha) |
 | Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Enter generates. |
 | Empty prompt = remove and fill from surroundings | Same. With Stability AI this uses their dedicated *Erase* model. |
 | 3 variations per generation, browse with ‹ › | Same: thumbnail grid of every generation (newest first), ‹ 1/6 › arrows, right-click to reuse a prompt, reveal or delete |
@@ -54,10 +54,10 @@ now; on macOS/Linux add the repo's `nuke` folder to `NUKE_PATH`.
 
 ## Use
 
-1. Select your plate and create **Generative Fill**. A `GenFillSelection` Roto is created and
-   wired into the Mask input.
-2. Open the Roto, draw around what you want to replace (view the GenerativeFill node so you
-   can see the plate).
+1. Select your plate and create **Generative Fill**, and view it.
+2. Click **✏ Draw Selection** and draw around what you want to replace in the Viewer. The shapes
+   belong to the node; edit, toggle or animate them from the shape list in the same panel.
+   (Prefer your own matte? Connect it to the Mask input and *selection from* switches to it.)
 3. In the GenerativeFill panel, type a prompt (*"a weathered wooden bench"*), or leave it
    empty to remove the object. Press **Generate**.
 4. Click thumbnails or use ‹ › to choose a variation. Generate again to add more.
@@ -93,6 +93,30 @@ shows which frame a variation came from.
 > **Data note:** cloud backends upload the crop (not the whole frame) to that provider. Check
 > your client / TPN rules before using them on production plates. The Local model never sends anything off
 > your machine.
+
+## Color pipeline
+
+Image models only understand display-style values in 0..1, and nothing they generate goes above
+1.0. GenFill keeps your plate's range by **encoding** it into a space where it fits, letting the
+model work there, and decoding the result with the exact inverse. Choose on the Settings tab
+(**color pipeline**):
+
+| Mode | What the model sees | Use for |
+|---|---|---|
+| **Auto (match input)** (default) | Display-referred plates (PNG/JPG in matte_paint / sRGB, log plates like LogC): the plate's own colorspace, i.e. the original file values. Scene-linear plates (EXR, ACEScg): the display transform. | Almost everything |
+| **Display transform** | Your show's output transform, e.g. ACES **Output - Rec.709** (auto-detected, or set *display colorspace*). Its tone curve rolls highlights into 0..1 so the model sees a natural picture; Nuke's inverse brings them back. | Scene-linear plates with highlights |
+| **Log (ACEScct)** | ACEScct (pure maths, no OCIO needed). 0..1 covers scene-linear up to ~222. Flatter look for the model. | Configs without an output transform; maximum headroom |
+| **Input colorspace** | Always the Read's colorspace. | Forcing the plate's own encoding |
+| **Custom** | Any OCIO colorspace you type. | Anything else |
+
+**Bit depth:** the local model gets a **32-bit float TIFF** and returns the model's raw float
+output, so nothing is rounded to 8 bits on the way in or out. That matters most for the inverse
+display transform, which stretches the top of the range and would band with 8-bit files. Cloud
+models only accept 8-bit PNG; they use the same encoding, just quantised.
+
+Each variation remembers the encoding it was made with, so switching modes never breaks older
+variations. The Script Editor / log shows the decision, e.g.
+`color: plate Read Read1 (colorspace 'ACES - ACEScg', .exr) -> display: Output - Rec.709`.
 
 ## Privacy and security
 

@@ -41,13 +41,15 @@ EXPECTED_KNOBS = {
     "Reformat": ["type", "box_width", "box_height", "box_fixed", "resize", "filter"],
     "Crop": ["box", "reformat"],
     "Write": ["file", "file_type", "datatype", "channels", "colorspace", "raw",
-              "create_directories", "disable"],
+              "create_directories", "disable", "compression"],
     "Read": ["file", "colorspace", "on_error", "raw"],
     "Merge2": ["operation", "Achannels", "output", "maskChannelMask"],
     "Copy": ["from0", "to0"],
     "Transform": ["translate", "filter"],
     "Switch": ["which"],
     "Roto": ["output", "replace"],
+    "OCIOColorSpace": ["in_colorspace", "out_colorspace"],
+    "Remove": ["operation", "channels"],
 }
 
 
@@ -267,13 +269,13 @@ def run_smoke_test(output_dir=None, show_result=True):
         with c:
             ctx["plate"].setSelected(True)
             g = gfnode.create()
-            roto = g.input(1)
             g.setInput(1, ctx["rect"])
-            if roto is not None and roto.Class() == "Roto":
+            roto = g.node(gfnode.ROTO)
+            if roto is not None:
                 ctx["roto_replace_knob"] = "replace" in roto.knobs()
-                nuke.delete(roto)
+            ctx["shape_link"] = "gf_shapes" in g.knobs()
             g.setInput(0, ctx["plate"])
-            g["gf_selection"].setValue(0)
+            g["gf_selection"].setValue(gfnode.SEL_MASK)
             label = [l for l in gfnode.backend_labels() if "Offline" in l][0]
             g["gf_backend"].setValue(label)
         ctx["g"] = g
@@ -347,6 +349,7 @@ def run_smoke_test(output_dir=None, show_result=True):
             rep.step("panel screenshot", _panel_screenshot, ctx["g"],
                      os.path.join(out, "panel.png"))
         rep.data["roto_has_replace_knob"] = ctx.get("roto_replace_knob")
+        rep.data["shape_link_knob"] = ctx.get("shape_link")
     finally:
         engine.QUIET = False
         rep.save()

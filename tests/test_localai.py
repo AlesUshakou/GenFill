@@ -129,7 +129,9 @@ class HelperTests(unittest.TestCase):
                 mock.patch.object(lclient, "get_client", return_value=self.client):
             out = local.LocalBackend().generate(req, "")
         self.assertEqual(len(out), 2)
-        self.assertTrue(out[0].startswith(b"\x89PNG"))
+        data, preview = out[0]                 # (result file, 8-bit preview for the panel)
+        self.assertTrue(data.startswith(b"\x89PNG"))
+        self.assertTrue(preview.startswith(b"\x89PNG"))
 
     def test_local_backend_not_installed(self):
         req = base.GenerationRequest(self.img, self.mask, self.mask, "x", 32, 32)

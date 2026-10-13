@@ -167,7 +167,7 @@ def refresh_result(node):
     read = _internal(node, gfnode.READ_RESULT)
     if _fwd(read["file"].value()) != _fwd(path):
         read["file"].setValue(_fwd(path))
-    colorspace.apply_to_read(read, node["gf_transfer"].value())
+    _configure_decode(node, gen)
     x, y, w, h = gen["region"]
     ref = _internal(node, gfnode.REFORMAT_RECV)
     ref["box_width"].setValue(w)
@@ -183,6 +183,41 @@ def refresh_result(node):
     if len(prompt) > 28:
         prompt = prompt[:27] + u"…"
     node["gf_info"].setValue("%s  (%d/%d)" % (prompt, idx, len(order)))
+
+
+def _configure_decode(node, gen):
+    """Read the result raw and decode it with the transfer it was made with."""
+    read = _internal(node, gfnode.READ_RESULT)
+    transfer = gen.get("transfer")
+    nodes = [node.node(n) for n in (gfnode.FROM_MODEL, gfnode.FROM_MODEL_LOG, gfnode.FROM_MODEL_OCIO)]
+    if transfer and all(n is not None for n in nodes):
+        colorspace.set_raw(read, True)
+        colorspace.configure(nodes[0], nodes[1], nodes[2], transfer, "from")
+    else:
+        # Made by GenFill <= 0.5: 8-bit file in the default (or typed) colorspace.
+        colorspace.set_raw(read, False)
+        colorspace.apply_to_read(read, node["gf_transfer"].value() if "gf_transfer" in node.knobs()
+                                 else colorspace.DEFAULT)
+        if nodes[0] is not None:
+            nodes[0]["which"].setValue(colorspace.SWITCH_INDEX["none"])
+
+
+def resolve_transfer(node):
+    """Work out how this generation is encoded for the model (see colorspace.py)."""
+    knobs = node.knobs()
+    mode = int(node["gf_color_mode"].getValue()) if "gf_color_mode" in knobs else colorspace.MODE_AUTO
+    read = colorspace.find_upstream_read(node.input(0))
+    rcs, rext = colorspace.read_info(read)
+    display = node["gf_display"].value().strip() if "gf_display" in knobs else "auto"
+    if not display or display.lower() == "auto":
+        ocio = node.node(gfnode.TO_MODEL_OCIO)
+        names = list(ocio["out_colorspace"].values()) if ocio is not None else []
+        display = colorspace.pick_display_colorspace(names)
+    custom = node["gf_transfer"].value() if "gf_transfer" in knobs else ""
+    transfer = colorspace.resolve(mode, rcs, rext, custom, colorspace.working_space(), display)
+    gflog.info("color: plate Read %s (colorspace %r, %s) -> %s",
+               read.name() if read is not None else "none", rcs, rext or "?", transfer["label"])
+    return transfer
 
 
 def select(node, gi, vi):
@@ -205,10 +240,17 @@ def delete_variation(node, gi, vi, delete_file=True):
     _save_state(node, st)
     refresh_result(node)
     if delete_file:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+        for p in (path, os.path.splitext(path)[0] + "_preview.png"):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def _thumb_path(path):
+    """Float results have an 8-bit preview next to them for the panel."""
+    preview = os.path.splitext(path)[0] + "_preview.png"
+    return preview if os.path.exists(preview) else path
 
 
 def thumbnails(node):
@@ -220,7 +262,7 @@ def thumbnails(node):
         gen = st["generations"][gi]
         out.append({
             "gi": gi, "vi": vi,
-            "path": resolve(node, gen, gen["files"][vi]),
+            "path": _thumb_path(resolve(node, gen, gen["files"][vi])),
             "prompt": gen.get("prompt", ""),
             "backend": gen.get("backend", ""),
             "seed": gen.get("seed", 0),
@@ -267,9 +309,14 @@ def _prepare(node, backend, frame, job_dir):
     src_input = node.input(0)
     if src_input is None:
         raise UserError("Connect an image to the Source input.")
-    if node["gf_selection"].getValue() == 0 and node.input(1) is None:
+    gfnode.ensure_current(node)
+    sel = int(node["gf_selection"].getValue())
+    if sel == gfnode.SEL_MASK and node.input(1) is None:
         raise UserError("Connect a Roto (or any matte) to the Mask input, "
-                        "or set 'selection from' to Source alpha.")
+                        "or set 'selection from' to Shapes.")
+    if sel == gfnode.SEL_SHAPES and not gfnode.roto_has_shapes(node):
+        raise UserError("Nothing is selected yet.\nClick 'Draw Selection' and draw a shape "
+                        "in the Viewer around what you want to fill.")
     fmt = src_input.format()
     fw, fh = fmt.width(), fmt.height()
 
@@ -286,8 +333,8 @@ def _prepare(node, backend, frame, job_dir):
     bbox = region.mask_bbox(pngio.read(probe_path))
     gflog.info("selection probe %dx%d of %dx%d plate: bbox %s", pw, ph, fw, fh, bbox)
     if bbox is None:
-        raise UserError("The selection is empty on frame %d.\nDraw a shape in the "
-                        "GenFillSelection Roto (or check the Mask / Source alpha)." % frame)
+        raise UserError("The selection is empty on frame %d.\nCheck the shapes (are they "
+                        "animated or switched off?), the Mask input or the Source alpha." % frame)
 
     # 2. region
     box = region.probe_bbox_to_format(bbox, pw, ph, fw, fh)
@@ -309,13 +356,17 @@ def _prepare(node, backend, frame, job_dir):
         ref = _internal(node, ref_name)
         ref["box_width"].setValue(mw)
         ref["box_height"].setValue(mh)
-    colorspace.apply_to_write(_internal(node, gfnode.WRITE_SRC), node["gf_transfer"].value())
+    transfer = resolve_transfer(node)
+    colorspace.configure(_internal(node, gfnode.TO_MODEL), _internal(node, gfnode.TO_MODEL_LOG),
+                         _internal(node, gfnode.TO_MODEL_OCIO), transfer, "to")
+    float_io = getattr(backend, "float_io", False)
     files = {
-        "image": os.path.join(job_dir, "source.png"),
+        "image": os.path.join(job_dir, "source.tif" if float_io else "source.png"),
         "mask": os.path.join(job_dir, "mask.png"),
         "mask_alpha": os.path.join(job_dir, "mask_alpha.png"),
+        "transfer": transfer,
     }
-    _execute(node, gfnode.WRITE_SRC, files["image"], frame)
+    _execute(node, gfnode.WRITE_SRC_F if float_io else gfnode.WRITE_SRC, files["image"], frame)
     _execute(node, gfnode.WRITE_MASK, files["mask"], frame)
     _execute(node, gfnode.WRITE_MASK_A, files["mask_alpha"], frame)
     return reg, mw, mh, (fw, fh), files
@@ -411,6 +462,7 @@ def generate(node, prompt=None, blocking=False):
         mask_alpha_path=files["mask_alpha"], prompt=prompt, width=mw, height=mh,
         seed=seed, count=count, negative_prompt=node["gf_negative"].value(),
         model=node["gf_model"].value().strip(), quality=node["gf_quality"].value())
+    request.transfer = files["transfer"]
     meta = {
         "id": gen_id,
         "prompt": prompt,
@@ -423,6 +475,7 @@ def generate(node, prompt=None, blocking=False):
         "region": [reg.x, reg.y, reg.w, reg.h],
         "model_size": [mw, mh],
         "abs_dir": job_dir,
+        "transfer": files["transfer"],
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
     }
     gflog.info("starting %s: %d variation(s) at %dx%d, job %s", backend.id, count, mw, mh, job_dir)
@@ -488,10 +541,15 @@ def _worker(node, uid, backend, request, api_key, meta, job_dir,
         images = backend.generate(request, api_key, progress=progress, cancelled=cancelled)
         gflog.info("%s returned %d image(s)", backend.id, len(images))
         files = []
-        for i, data in enumerate(images):
-            name = "var_%02d.png" % (i + 1)
+        ext = getattr(backend, "result_ext", ".png")
+        for i, item in enumerate(images):
+            data, preview = item if isinstance(item, tuple) else (item, None)
+            name = "var_%02d%s" % (i + 1, ext)
             with open(os.path.join(job_dir, name), "wb") as fh:
                 fh.write(data)
+            if preview:
+                with open(os.path.join(job_dir, "var_%02d_preview.png" % (i + 1)), "wb") as fh:
+                    fh.write(preview)
             files.append("%s/%s" % (meta["id"], name))
         meta["files"] = files
         send(_finish, (node, uid, meta))

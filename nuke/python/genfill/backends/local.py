@@ -12,7 +12,7 @@ import os
 import random
 
 from .base import Backend, BackendError, Cancelled
-from .. import region
+from .. import colorspace, region
 
 QUALITY_STEPS = {"low": 16, "medium": 24, "auto": 24, "high": 32}
 MAX_SEED = 2 ** 32 - 1
@@ -29,6 +29,8 @@ class LocalBackend(Backend):
     description = ("Free and offline on this PC's GPU. FLUX.1 Fill for prompts, LaMa for removal. "
                    "FLUX.1 [dev] licence: non-commercial use.")
     guidance = 30.0
+    float_io = True         # 32-bit float TIFF in and out (no 8-bit rounding)
+    result_ext = ".tif"
     refine_strength = 0.8
 
     def is_installed(self):
@@ -58,6 +60,7 @@ class LocalBackend(Backend):
             "guidance": self.guidance,
             "refine_strength": self.refine_strength,
             "out_dir": out_dir,
+            "preview": colorspace.preview_kind(getattr(request, "transfer", None)),
         }
         client = get_client()
         if progress and not client.is_running():
@@ -78,7 +81,13 @@ class LocalBackend(Backend):
         results = []
         for path in done.get("files", []):
             with open(path, "rb") as fh:
-                results.append(fh.read())
+                data = fh.read()
+            preview = None
+            ppath = os.path.splitext(path)[0] + "_preview.png"
+            if os.path.exists(ppath):
+                with open(ppath, "rb") as fh:
+                    preview = fh.read()
+            results.append((data, preview))
         if not results:
             raise BackendError("The local AI returned no images.")
         return results

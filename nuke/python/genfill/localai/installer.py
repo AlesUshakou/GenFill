@@ -47,7 +47,7 @@ TORCH_CUDA_TAGS = ["cu130", "cu128", "cu126"]
 RUNTIME_PREFIXES = ("msvcp140", "vcruntime140", "concrt140", "vcomp140", "vccorlib140")
 PYTHON_VERSION = "3.12"
 LIBRARIES = ["diffusers>=0.34", "transformers>=4.48", "accelerate>=1.2", "gguf>=0.10.0",
-             "sentencepiece", "protobuf", "safetensors", "pillow", "numpy"]
+             "sentencepiece", "protobuf", "safetensors", "pillow", "numpy", "tifffile"]
 
 QUANTS = {
     # id: (label, file size GB, minimum VRAM GB it's meant for)

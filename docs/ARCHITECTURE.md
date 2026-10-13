@@ -17,7 +17,8 @@
 ```
 Source ─┬─ FrameHold ── Crop ── Reformat ── Write(source.png)            ┐
         │                                                               │ send side
-Mask ───┴─ Switch ── Erode(expand) ── FrameHold ── Expression(rgb=m, a=1-m)
+Roto(gf_roto, alpha) ─┐
+Mask ─────────────────┼─ Switch ── Dilate(expand) ── FrameHold ── Expression(rgb=m, a=1-m)
                            │                 ├─ Reformat(probe) ── Write(probe.png)
                            │                 └─ Crop ── Reformat ── Write(mask.png, mask_alpha.png)
                            └─ Blur(feather) ─────────────┐
@@ -26,6 +27,13 @@ Read(var_XX.png) ── Reformat(crop size) ── Transform(crop xy) ── Mer
 Source ───────────────────────────────────────────────────────────────── Switch ── Output
 ```
 
+- The selection Switch (`gf_selection`) picks 0 = the built-in Roto `gf_roto` (fed by the Source
+  for its format, alpha only, *replace* on), 1 = the Mask input, 2 = the Source alpha. The Roto's
+  `curves` knob is exposed on the Group as the Link_Knob `gf_shapes`, so its shape list and Viewer
+  tools are available from the GenerativeFill panel; *Draw Selection* also opens the Roto's own
+  panel as a fallback. Nuke only puts a Roto's Viewer tools up while that Roto's control
+  panel is open, so on `showPanel` GenFill opens `gf_roto`'s panel floating (`forceFloat`) and hides
+  that window via Qt (the tools stay); `hidePanel` closes it. Nodes from before 0.7 are upgraded in `ensure_current()`.
 - The four Write nodes are **disabled** except during the few milliseconds GenFill renders
   them, so *Render All* and farm submissions never touch them.
 - The output Switch is `gf_has_result ? gf_output : 2`: until something is generated the node
@@ -104,36 +112,28 @@ Nuke (GenFill plugin)                         GenFill-LocalAI\ (outside OneDrive
 
 ## Colour
 
-`colorspace.py` owns the round trip. v0.1 uses **SDR 8-bit**: Write and Read share one
-colourspace (`default` = the project's 8-bit file setting), so the transform is exactly
-inverted, and only pixels inside the feathered selection are replaced.
+`colorspace.py` decides, per generation, how the plate is encoded for the model and stores the
+decision (`transfer`) with the generation:
 
-## HDR roadmap
+```
+Source -> Crop -> Reformat -> [gf_to_model: Expression(ACEScct) | OCIOColorSpace | none]
+       -> Write 32-bit float TIFF (local) / 8-bit PNG (cloud), raw
+model works in 0..1 (float in, float out for the local model)
+Read (raw) -> [gf_from_model: inverse Expression | inverse OCIOColorSpace | none] -> Reformat -> Transform
+```
 
-The problem: models are trained on display-referred 8-bit images. Plate values above 1.0
-(skies, practicals, speculars) clip when they're encoded, and the fill comes back with
-nothing above 1.0, which reads as flat once it's graded.
-
-Planned in order of payoff:
-
-1. **Invertible tone-mapped transfer** (next). Before the Write, apply a smooth curve with an
-   exact inverse that compresses scene-linear `[0, ∞)` into `[0, 1)`, e.g. a parametric
-   Reinhard-style shoulder with exposure set from the region's context (`x' = x / (1 + x/w)`,
-   inverse `x = x' / (1 − x'/w)`). Apply the inverse after the Read. Highlights in the context
-   become visible to the model, and generated highlights come back above 1.0. This needs only
-   two Expression nodes around the existing Write/Read, plus a new entry in
-   `colorspace.TRANSFER_MODES`. Risk: 8-bit quantisation near the shoulder, so the
-   *quality* depends on how much headroom is compressed. Mitigate with per-region exposure
-   normalisation.
-2. **16-bit I/O.** Write 16-bit PNG/TIFF for backends that accept it (most cloud APIs return
-   8-bit today, so this matters mainly for local models).
-3. **Highlight reconstruction.** For backends that only see SDR, transfer the luminance
-   distribution of the surrounding HDR context onto the generated patch (ratio-map
-   extrapolation in the context band), so a generated sky matches the plate's sky intensity.
-4. **Local HDR-native models** (ComfyUI backend): log or float in, float out, no tonemap.
-
-Because the node only ever calls `colorspace.apply_to_write/read` (and will call the
-tonemap pair), adding these modes won't change the node graph users already have in scripts.
+- *Auto*: the Read feeding the plate decides. Display-referred colorspaces (matte_paint, sRGB,
+  Rec.709, log encodings such as LogC/ACEScct) are used as-is: the model sees the original file
+  values. Scene-linear (ACEScg, linear, EXR) goes through the display transform (e.g. ACES
+  `Output - Rec.709`, picked from the OCIO config), whose tone curve compresses highlights into
+  0..1; falls back to ACEScct when the config has no output transform.
+- The ACEScct curve is implemented as Expression nodes (and in Python for previews/tests), so it
+  needs no OCIO config. 0..1 in ACEScct covers scene-linear -0.007..222.9.
+- The local helper loads the float TIFF with tifffile, clamps to 0..1 only at the model's input,
+  takes FLUX's float output (`output_type="np"`) and writes float TIFF, plus an 8-bit preview PNG
+  for the panel (ACEScct decoded + sRGB for log; as-is for display-referred).
+- Generations made before 0.6 have no `transfer`; they're read the old way (8-bit file in the
+  default colourspace, no decode).
 
 ## Known limitations (v0.1)
 

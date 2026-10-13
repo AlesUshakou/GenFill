@@ -74,6 +74,62 @@ WINDOWS_MEMORY_MSG = (
     "Advanced system settings > Performance > Advanced > Virtual memory), then try again.")
 
 
+# ---------------------------------------------------------------- image IO
+# Float in, float out: the plate arrives as a 32-bit float TIFF already encoded
+# into model space by Nuke (see genfill/colorspace.py), and results go back as
+# float TIFF, so nothing is rounded to 8 bits.
+_A, _B, _CCT_BREAK = 10.5402377416545, 0.0729055341958355, 0.155251141552511
+
+
+def load_image(path):
+    """RGB float32 (H, W, 3); TIFF via tifffile (float/16/8-bit), others via PIL."""
+    import numpy as np
+    if path.lower().endswith((".tif", ".tiff")):
+        try:
+            import tifffile
+        except ImportError:
+            raise RuntimeError("Float image support isn't installed in the Local AI yet. Click "
+                               "'Local AI...' in the node's panel and click Repair (quick).")
+        arr = tifffile.imread(path)
+        if arr.ndim == 3 and arr.shape[0] in (3, 4) and arr.shape[-1] not in (3, 4):
+            arr = np.transpose(arr, (1, 2, 0))          # planar -> interleaved
+        if arr.ndim == 2:
+            arr = np.stack([arr] * 3, axis=-1)
+        if arr.dtype == np.uint16:
+            arr = arr.astype(np.float32) / 65535.0
+        elif arr.dtype == np.uint8:
+            arr = arr.astype(np.float32) / 255.0
+        return np.ascontiguousarray(arr[..., :3].astype(np.float32))
+    from PIL import Image
+    return np.asarray(Image.open(path).convert("RGB")).astype(np.float32) / 255.0
+
+
+def save_float_tiff(path, arr):
+    import numpy as np
+    import tifffile
+    tifffile.imwrite(path, np.ascontiguousarray(arr.astype(np.float32)), photometric="rgb")
+
+
+def preview_png(path, arr, kind):
+    """8-bit thumbnail. 'log': ACEScct -> linear -> sRGB; 'display': already viewable."""
+    import numpy as np
+    from PIL import Image
+    a = arr.astype(np.float32)
+    if kind == "log":
+        a = np.where(a <= _CCT_BREAK, (a - _B) / _A, np.exp2(a * 17.52 - 9.72))
+        a = np.clip(a, 0.0, 1.0)
+        a = np.where(a <= 0.0031308, 12.92 * a, 1.055 * np.power(a, 1 / 2.4) - 0.055)
+    Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8)).save(path)
+
+
+def resize_float(arr, width, height):
+    import torch
+    import torch.nn.functional as F
+    t = torch.from_numpy(arr.transpose(2, 0, 1))[None]
+    t = F.interpolate(t, size=(height, width), mode="bicubic", align_corners=False)
+    return t[0].permute(1, 2, 0).numpy()
+
+
 class Cancelled(Exception):
     pass
 
@@ -194,15 +250,15 @@ class Engine(object):
         return result
 
     def run_lama(self, image, mask):
+        """image: float32 (H, W, 3) in 0..1, mask: PIL 'L'. Returns float32 (H, W, 3)."""
         import numpy as np
         import torch
         import torch.nn.functional as F
-        from PIL import Image
         if self.lama is None:
             self.lama = torch.jit.load(self._path("lama"), map_location="cpu").eval()
         model = self.lama.to(self.device)
         try:
-            im = np.asarray(image.convert("RGB")).astype(np.float32) / 255.0
+            im = np.clip(image, 0.0, 1.0).astype(np.float32)
             mk = (np.asarray(mask.convert("L")) > 127).astype(np.float32)
             h, w = mk.shape
             it = torch.from_numpy(im.transpose(2, 0, 1))[None].to(self.device)
@@ -214,7 +270,7 @@ class Engine(object):
             with torch.no_grad():
                 out = model(it, mt)
             out = out[0, :, :h, :w].permute(1, 2, 0).float().cpu().numpy()
-            return Image.fromarray((out.clip(0, 1) * 255).round().astype("uint8"))
+            return np.clip(out, 0.0, 1.0).astype(np.float32)
         finally:
             self.lama = model.to("cpu")
             if self.device == "cuda":
@@ -235,13 +291,15 @@ class Engine(object):
 
         t_var = time.time()
         gen = torch.Generator("cpu").manual_seed(int(seed))
+        import numpy as np
+        image = np.clip(image, 0.0, 1.0).astype(np.float32)   # the model's range
         out = pipe(prompt_embeds=embeds[0], pooled_prompt_embeds=embeds[1], image=image,
                    mask_image=mask, width=int(width), height=int(height), strength=float(strength),
                    guidance_scale=float(guidance), num_inference_steps=int(steps), generator=gen,
-                   max_sequence_length=512, callback_on_step_end=on_step)
+                   max_sequence_length=512, callback_on_step_end=on_step, output_type="np")
         job.check()
         log("variation %d: %d steps in %.1fs", done_before + 1, steps, time.time() - t_var)
-        return out.images[0]
+        return np.asarray(out.images[0], dtype=np.float32)    # float, never 8-bit
 
     def generate(self, job):
         import torch
@@ -250,12 +308,16 @@ class Engine(object):
         if self.pipe is None:
             job.progress(0.0, "Loading the AI libraries...")
         self.load(job)
-        image = Image.open(m["image"]).convert("RGB")
+        image = load_image(m["image"])
         mask = Image.open(m["mask"]).convert("L")
         width, height = int(m["width"]), int(m["height"])
-        if image.size != (width, height):
-            image = image.resize((width, height), Image.LANCZOS)
+        log("input %s: %dx%d %s, range %.3f..%.3f", os.path.basename(m["image"]), image.shape[1],
+            image.shape[0], image.dtype, float(image.min()), float(image.max()))
+        if image.shape[:2] != (height, width):
+            image = resize_float(image, width, height)
+        if mask.size != (width, height):
             mask = mask.resize((width, height), Image.NEAREST)
+        preview_kind = m.get("preview", "display")
         count, steps = int(m.get("count", 3)), int(m.get("steps", 24))
         seed, guidance = int(m.get("seed", 1)), float(m.get("guidance", 30.0))
         prompt = (m.get("prompt") or "").strip()
@@ -278,8 +340,10 @@ class Engine(object):
                 else:
                     result = self._flux(job, embeds, image, mask, width, height, seed + i, steps,
                                         guidance, 1.0, i, count)
-                path = os.path.join(m["out_dir"], "local_%02d.png" % (i + 1))
-                result.save(path)
+                path = os.path.join(m["out_dir"], "local_%02d.tif" % (i + 1))
+                save_float_tiff(path, result)
+                preview_png(os.path.join(m["out_dir"], "local_%02d_preview.png" % (i + 1)),
+                            result, preview_kind)
                 outputs.append(path)
             return outputs
         except torch.cuda.OutOfMemoryError:
@@ -289,19 +353,21 @@ class Engine(object):
                 "resolution, or reinstall Local AI with a smaller model size.")
 
     def selftest(self, job):
+        import numpy as np
         from PIL import Image, ImageDraw
         tmp = os.path.join(self.root, "selftest")
         if os.path.isdir(tmp):
             shutil.rmtree(tmp, ignore_errors=True)
         os.makedirs(tmp)
-        img = Image.new("RGB", (512, 512), (90, 120, 160))
-        ImageDraw.Draw(img).rectangle([0, 300, 512, 512], fill=(70, 90, 60))
+        img = np.zeros((512, 512, 3), np.float32)
+        img[:] = (0.35, 0.47, 0.63)
+        img[300:] = (0.27, 0.35, 0.24)
+        save_float_tiff(os.path.join(tmp, "src.tif"), img)       # also proves TIFF IO works
         mask = Image.new("L", (512, 512), 0)
         ImageDraw.Draw(mask).ellipse([180, 180, 330, 330], fill=255)
-        img.save(os.path.join(tmp, "src.png"))
         mask.save(os.path.join(tmp, "mask.png"))
         t0 = time.time()
-        job.msg.update(image=os.path.join(tmp, "src.png"), mask=os.path.join(tmp, "mask.png"),
+        job.msg.update(image=os.path.join(tmp, "src.tif"), mask=os.path.join(tmp, "mask.png"),
                        width=512, height=512, count=2, steps=4, seed=1, prompt="",
                        out_dir=tmp)
         files = self.generate(job)
@@ -341,8 +407,10 @@ class FakeEngine(object):
                 job.check()
                 job.progress((i + (s + 1) / float(steps)) / m.get("count", 3), "fake step")
                 time.sleep(float(m.get("step_delay", 0.0)))
-            path = os.path.join(m["out_dir"], "local_%02d.png" % (i + 1))
+            ext = os.path.splitext(m["image"])[1] or ".png"
+            path = os.path.join(m["out_dir"], "local_%02d%s" % (i + 1, ext))
             shutil.copyfile(m["image"], path)
+            shutil.copyfile(m["image"], os.path.join(m["out_dir"], "local_%02d_preview.png" % (i + 1)))
             out.append(path)
         return out
 

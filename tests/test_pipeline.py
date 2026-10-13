@@ -30,6 +30,7 @@ class PipelineTests(unittest.TestCase):
         self.plate = nuke.nodes.Read(name="Plate")
         self.g = gfnode.create()
         self.g.setInput(0, self.plate)
+        fake_nuke.add_shape(self.g.node(gfnode.ROTO))
         mock_label = [l for l in gfnode.backend_labels() if "Offline" in l][0]
         self.g["gf_backend"].setValue(mock_label)
 
@@ -47,8 +48,19 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(g.node(gfnode.OUT_SWITCH)["which"].expression,
                          "parent.gf_has_result ? parent.gf_output : 2")
         self.assertEqual(g.node(gfnode.COMP).input(2), g.node(gfnode.FEATHER))
-        self.assertEqual(g.input(1).Class(), "Roto")
-        self.assertTrue(g.input(1)["replace"].value())
+        # The selection Roto lives inside the node; nothing is created outside it.
+        self.assertIsNone(g.input(1))
+        roto = g.node(gfnode.ROTO)
+        self.assertEqual(roto.Class(), "Roto")
+        self.assertTrue(roto["replace"].value())
+        self.assertIs(roto.input(0), g.node(gfnode.SRC_IN))
+        sw = g.node(gfnode.SEL_SWITCH)
+        self.assertIs(sw.input(gfnode.SEL_SHAPES), roto)
+        self.assertIs(sw.input(gfnode.SEL_MASK), g.node(gfnode.MASK_IN))
+        self.assertIs(sw.input(gfnode.SEL_ALPHA), g.node(gfnode.SRC_IN))
+        self.assertEqual(g["gf_selection"].getValue(), gfnode.SEL_SHAPES)
+        self.assertEqual(g["gf_shapes"].link, "gf_roto.curves")
+        self.assertIn("gf_draw", g.knobs())
         self.assertEqual(g["gf_variations"].value(), 3)
 
     def test_layer_output_has_source_format(self):
@@ -77,6 +89,56 @@ class PipelineTests(unittest.TestCase):
         self.assertIs(g.node(gfnode.OUT_SWITCH).input(1), g.node(gfnode.LAYER))
         self.assertEqual(g["gf_output"].value(), "Layer")
         self.assertFalse(gfnode.ensure_current(g))      # idempotent
+
+    def test_empty_shapes_explains_what_to_do(self):
+        g = self.g
+        g.node(gfnode.ROTO)["curves"].rootLayer[:] = []
+        self.assertFalse(engine.generate(g, "x", blocking=True))
+        self.assertIn("Draw Selection", engine.status(g)["error"])
+
+    def test_mask_input_switches_selection_mode(self):
+        g = self.g
+        g.node(gfnode.ROTO)["curves"].rootLayer[:] = []
+        matte = nuke.nodes.Read(name="Matte")
+        g.setInput(1, matte)
+        n = gfnode.nuke          # the fake module node.py imported
+        n.thisNode = lambda: g
+        n.thisKnob = lambda: g["inputChange"]
+        try:
+            gfnode.knob_changed()
+            self.assertEqual(g["gf_selection"].getValue(), gfnode.SEL_MASK)
+            g.setInput(1, None)
+            gfnode.knob_changed()
+            self.assertEqual(g["gf_selection"].getValue(), gfnode.SEL_SHAPES)
+            # Shapes already drawn: connecting a mask doesn't take them away.
+            fake_nuke.add_shape(g.node(gfnode.ROTO))
+            g.setInput(1, matte)
+            gfnode.knob_changed()
+            self.assertEqual(g["gf_selection"].getValue(), gfnode.SEL_SHAPES)
+        finally:
+            del n.thisNode, n.thisKnob
+
+    def test_pre_07_selection_is_upgraded(self):
+        g = self.g
+        sw = g.node(gfnode.SEL_SWITCH)
+        with g:
+            fake_nuke.delete(g.node(gfnode.ROTO))
+        sw.setInput(0, g.node(gfnode.MASK_IN))
+        sw.setInput(1, g.node(gfnode.SRC_IN))
+        sw.setInput(2, None)
+        for name in ("gf_shapes", "gf_draw"):
+            del g._knobs[name]
+        g["gf_selection"].setValues(["Mask input", "Source alpha"])
+        g["gf_selection"].setValue(1)                  # old "Source alpha"
+        self.assertTrue(gfnode.ensure_current(g))
+        roto = g.node(gfnode.ROTO)
+        self.assertIsNotNone(roto)
+        self.assertIs(sw.input(gfnode.SEL_SHAPES), roto)
+        self.assertIs(sw.input(gfnode.SEL_MASK), g.node(gfnode.MASK_IN))
+        self.assertIs(sw.input(gfnode.SEL_ALPHA), g.node(gfnode.SRC_IN))
+        self.assertEqual(g["gf_selection"].value(), "Source alpha")
+        self.assertIn("gf_shapes", g.knobs())
+        self.assertFalse(gfnode.ensure_current(g))
 
     def test_generate_and_select(self):
         g = self.g

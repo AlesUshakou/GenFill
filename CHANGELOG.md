@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.7.1 - 2026-10-13
+
+- **Roto tools now appear in the Viewer when the GenerativeFill panel is open** (with *selection
+  from* = Shapes). Nuke only shows a Roto's Viewer tools while that Roto's own panel is open, so
+  GenFill opens the built-in Roto's panel as a hidden floating window: you get the tools and the
+  curve overlay, and the GenerativeFill panel stays the only one you see (works with a
+  Properties bin limit of 1). Closing the GenerativeFill panel removes the tools.
+
+## 0.7.0 - 2026-10-13
+
+- **The selection is drawn on the GenerativeFill node itself.** The Roto now lives inside the
+  node, so there's no separate *GenFillSelection* node: draw, edit and generate from one
+  properties panel.
+  - **✏ Draw Selection** (under the prompt panel) puts the Roto tools in the Viewer.
+  - The Roto's **shape list** is linked onto the Generative Fill tab, so shapes can be renamed,
+    toggled, animated and deleted there.
+- *selection from* is now **Shapes (built-in Roto)** (default), **Mask input** or
+  **Source alpha**. Connecting a matte to the Mask input switches to *Mask input* when no shapes
+  are drawn; disconnecting it switches back to *Shapes*.
+- Generating with no shapes says what to do instead of failing on an empty probe.
+- Existing nodes are upgraded when their panel opens: the built-in Roto is added, their
+  *selection from* choice is kept, and the Draw Selection button and shape list go on a new
+  *Selection* tab. An external GenFillSelection Roto keeps working through the Mask input; you
+  can copy its shapes into the built-in one (select in the shape list, Ctrl+C / Ctrl+V) and
+  delete it.
+
+## 0.6.0 - 2026-10-13
+
+- **Colour pipeline rebuilt for HDR plates.** New *color pipeline* setting:
+  - **Auto (match input)** (default): display-referred plates round-trip in their own Read
+    colorspace (matte_paint / sRGB / LogC...), so the model sees the original file values;
+    scene-linear plates (EXR, ACEScg) go through the **display transform**.
+  - **Display transform**: e.g. ACES *Output - Rec.709* (auto-detected from the OCIO config or
+    typed in *display colorspace*). Its tone curve rolls highlights into 0..1; the exact inverse
+    brings them back above 1.
+  - **Log (ACEScct)**: config-independent, keeps scene-linear up to ~222.
+  - **Input colorspace** and **Custom**.
+- **32-bit float transport** for the local model: float TIFF in, FLUX's float output back out,
+  no 8-bit rounding anywhere (the old path was an 8-bit PNG in the 8-bit default colourspace,
+  i.e. matte_paint, clamped at 1). Cloud models still get 8-bit PNG, with the same encoding.
+- Each variation stores its encoding, so older variations always decode correctly; variations
+  made by earlier versions decode the old way. Existing nodes are upgraded when their panel opens.
+- Float results carry an 8-bit preview for the variation thumbnails.
+- The log records the decision per generation (plate Read, its colorspace, chosen encoding).
+- Local AI needs **Repair** once (adds the small `tifffile` package).
+
 ## 0.5.0 - 2026-10-12
 
 - **Layer** output (replaces "Fill only"): just the generated fill in Source's format,

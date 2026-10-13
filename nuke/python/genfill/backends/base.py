@@ -56,6 +56,8 @@ class Backend(object):
     default_model = ""
     models = ()             # suggestions shown in the UI
     description = ""
+    float_io = False        # True: takes 32-bit float TIFF in, returns float TIFF
+    result_ext = ".png"
 
     def model_size(self, width, height, model=""):
         """Resolution to send for a crop of ``width`` x ``height``."""

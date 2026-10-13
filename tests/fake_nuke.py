@@ -74,8 +74,31 @@ class Knob(object):
     def setTooltip(self, t):
         pass
 
+    def setLabel(self, t):
+        self.label = t
+
     def setRange(self, a, b):
         pass
+
+
+class CurvesKnob(Knob):
+    """Roto 'curves': rootLayer is iterable over the shapes."""
+    def __init__(self, name):
+        Knob.__init__(self, name)
+        self.rootLayer = []
+
+
+def add_shape(roto, name="Bezier1"):
+    roto["curves"].rootLayer.append(name)
+
+
+class LinkKnob(Knob):
+    def setLink(self, target):
+        self.link = target
+
+
+def Link_Knob(name, label=""):
+    return LinkKnob(name, label)
 
 
 def _knob_factory(cls_name):
@@ -127,6 +150,8 @@ class Node(object):
         self._name = kw.pop("name", "%s%d" % (cls, _counter[0]))
         self._xy = (0, 0)
         self._format = Format(1920, 1080)
+        if cls == "Roto":
+            self._knobs["curves"] = CurvesKnob("curves")
         for k, v in kw.items():
             self[k].setValue(v)
         (_context[-1]._children if _context else _root_nodes).append(self)
@@ -280,10 +305,14 @@ def message(m):
 def _box_size(write):
     """Find the upstream Reformat box size for a Write."""
     up = write.input(0)
-    try:
-        return int(up["box_width"].value()), int(up["box_height"].value())
-    except (TypeError, ValueError):
-        return 64, 36   # rendering a node without a box (e.g. the whole Group)
+    for _ in range(6):          # look through Switch / colour nodes to the Reformat
+        if up is None:
+            break
+        try:
+            return int(up["box_width"].value()), int(up["box_height"].value())
+        except (TypeError, ValueError):
+            up = up.input(int(up["which"].value() or 0)) if up.Class() == "Switch" else up.input(0)
+    return 64, 36   # rendering a node without a box (e.g. the whole Group)
 
 
 def execute(write, first, last, incr=1):

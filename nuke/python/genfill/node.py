@@ -42,7 +42,14 @@ PROBE_REFORMAT = "gf_probe_reformat"
 PROBE_WRITE = "gf_probe_write"
 CROP_SRC = "gf_crop_src"
 REFORMAT_SRC = "gf_reformat_src"
-WRITE_SRC = "gf_write_src"
+WRITE_SRC = "gf_write_src"            # 8-bit PNG (cloud / preview backends)
+WRITE_SRC_F = "gf_write_src_float"    # 32-bit float TIFF (local model)
+TO_MODEL = "gf_to_model"
+TO_MODEL_LOG = "gf_to_model_log"
+TO_MODEL_OCIO = "gf_to_model_ocio"
+FROM_MODEL = "gf_from_model"
+FROM_MODEL_LOG = "gf_from_model_log"
+FROM_MODEL_OCIO = "gf_from_model_ocio"
 CROP_MASK = "gf_crop_mask"
 REFORMAT_MASK = "gf_reformat_mask"
 WRITE_MASK = "gf_write_mask"
@@ -58,10 +65,27 @@ OUT_SWITCH = "gf_output_switch"
 BLANK = "gf_layer_blank"
 LAYER = "gf_layer"
 
-WRITE_NODES = (PROBE_WRITE, WRITE_SRC, WRITE_MASK, WRITE_MASK_A)
+WRITE_NODES = (PROBE_WRITE, WRITE_SRC, WRITE_SRC_F, WRITE_MASK, WRITE_MASK_A)
 
-SELECTION_MODES = ["Mask input", "Source alpha"]
+ROTO = "gf_roto"
+SEL_SHAPES, SEL_MASK, SEL_ALPHA = 0, 1, 2
+SELECTION_MODES = ["Shapes (built-in Roto)", "Mask input", "Source alpha"]
+SELECTION_TOOLTIP = ("Where the area to fill comes from:\n"
+                     "Shapes: the Roto shapes drawn on this node (Draw Selection, or the shape "
+                     "list below).\nMask input: the alpha of whatever is in the Mask input.\n"
+                     "Source alpha: the Source's own alpha.")
 OUTPUT_MODES = ["Comp", "Layer", "Bypass"]
+COLOR_TOOLTIP = (
+    "How the plate is encoded for the model, which only understands 0..1 values:\n"
+    "Auto: use the colorspace of the Read the plate comes from (e.g. matte_paint / sRGB for a "
+    "PNG, LogC for an ARRI plate). Scene-linear plates (EXR, ACEScg) use the display transform.\n"
+    "Display transform: e.g. Output - Rec.709. Its tone curve rolls highlights into 0..1 so the "
+    "model sees a natural image; Nuke's inverse brings them back.\n"
+    "Log (ACEScct): keeps highlights up to ~222 (scene-linear); flatter look for the model.\n"
+    "Input colorspace: always the Read's colorspace.\n"
+    "Custom: the colorspace in 'custom colorspace'.\n"
+    "The local model gets 32-bit float in and out; the result goes back through the exact "
+    "inverse. Each variation remembers its encoding.")
 OUTPUT_TOOLTIP = ("Comp: the fill blended over Source through the expanded, feathered selection.\n"
                   "Layer: just the generated fill in Source's format, premultiplied by the "
                   "expanded, feathered selection (alpha included), ready to Merge over anything. "
@@ -96,11 +120,13 @@ def _place(node, col, row):
     node.setXYpos(int(col * 140), int(row * 70))
 
 
-def _make_write(name, channels, raw, col, row, inp):
-    w = nuke.nodes.Write(name=name, file_type="png")
+def _make_write(name, channels, raw, col, row, inp, file_type="png", datatype="8 bit"):
+    w = nuke.nodes.Write(name=name, file_type=file_type)
     w.setInput(0, inp)
     if "datatype" in w.knobs():
-        w["datatype"].setValue("8 bit")
+        w["datatype"].setValue(datatype)
+    if file_type == "tiff" and "compression" in w.knobs():
+        w["compression"].setValue("none")
     w["channels"].setValue(channels)
     if "create_directories" in w.knobs():
         w["create_directories"].setValue(True)
@@ -128,6 +154,109 @@ def backend_for(node):
 # build
 # --------------------------------------------------------------------------
 
+def _make_roto(src):
+    """The built-in selection: a Roto fed by the Source (for its format), alpha only."""
+    roto = nuke.nodes.Roto(name=ROTO)
+    roto.setInput(0, src)
+    roto["output"].setValue("alpha")
+    if "replace" in roto.knobs():
+        # Shapes replace the alpha instead of merging with the plate's alpha,
+        # so a plate with a solid alpha doesn't select the whole frame.
+        roto["replace"].setValue(True)
+    return roto
+
+
+def roto_has_shapes(group):
+    roto = group.node(ROTO)
+    if roto is None or "curves" not in roto.knobs():
+        return False
+    try:
+        return len(list(roto["curves"].rootLayer)) > 0
+    except Exception:
+        return False
+
+
+def show_roto(group):
+    """Open the built-in Roto's panel so its tools appear in the Viewer."""
+    roto = group.node(ROTO)
+    if roto is not None:
+        nuke.show(roto)
+
+
+# Nuke only puts the Roto tools (and its curve overlay) in the Viewer while the
+# Roto's own control panel is open; a linked 'curves' knob shows the shape list
+# but not the tools. So while the GenerativeFill panel is open we open the
+# internal Roto's panel as a floating window and hide that window: the tools
+# stay in the Viewer and the GenerativeFill panel is the only one you see.
+# A floating panel also doesn't count against the Properties bin's panel limit.
+
+def _hide_floating_panels(roto_name):
+    try:
+        from .ui.qt import QtWidgets
+    except Exception:
+        return 0
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        return 0
+    hidden = 0
+    for w in app.topLevelWidgets():
+        try:
+            if w.isVisible() and w.objectName() == roto_name:
+                w.hide()
+                hidden += 1
+        except Exception:
+            pass
+    return hidden
+
+
+def attach_roto_tools(group):
+    """Show the built-in Roto's Viewer tools without showing its panel.
+
+    Returns True when the tools are attached with the panel hidden."""
+    roto = group.node(ROTO)
+    if roto is None or not nuke.GUI:
+        return False
+    try:
+        roto.showControlPanel(forceFloat=True)
+    except TypeError:          # Nuke without forceFloat
+        return False
+    name = roto.name()
+    if _hide_floating_panels(name):
+        return True
+    try:                       # the window can appear a moment later
+        from .ui.qt import QtCore
+        QtCore.QTimer.singleShot(0, lambda: _hide_floating_panels(name))
+        QtCore.QTimer.singleShot(150, lambda: _hide_floating_panels(name))
+    except Exception:
+        pass
+    return True
+
+
+def detach_roto_tools(group):
+    roto = group.node(ROTO)
+    if roto is not None and nuke.GUI:
+        try:
+            roto.hideControlPanel()
+        except Exception:
+            pass
+
+
+def _safe_call(fn, *args):
+    try:
+        return fn(*args)
+    except Exception as exc:   # never break the properties panel
+        print("GenFill: %s failed: %s" % (fn.__name__, exc))
+
+
+def _sync_roto_tools(group):
+    if "gf_selection" not in group.knobs():
+        return
+    if int(group["gf_selection"].getValue()) == SEL_SHAPES:
+        _safe_call(attach_roto_tools, group)
+    else:
+        _safe_call(detach_roto_tools, group)
+
+
 def _build_internals(group):
     with group:
         src = nuke.nodes.Input(name=SRC_IN)
@@ -136,9 +265,12 @@ def _build_internals(group):
         _place(mask, 3, 0)
 
         # ---- selection matte -------------------------------------------
+        roto = _make_roto(src)
+        _place(roto, 2, 0)
         sel = nuke.nodes.Switch(name=SEL_SWITCH)
-        sel.setInput(0, mask)
-        sel.setInput(1, src)
+        sel.setInput(SEL_SHAPES, roto)
+        sel.setInput(SEL_MASK, mask)
+        sel.setInput(SEL_ALPHA, src)
         sel["which"].setExpression("parent.gf_selection")
         _place(sel, 3, 1)
 
@@ -262,6 +394,79 @@ def _build_internals(group):
         out.setInput(0, out_sw)
         _place(out, 1, 13)
     _build_layer(group)
+    _build_color_nodes(group)
+
+
+def _expression(name, exprs, inp, col, row):
+    e = nuke.nodes.Expression(name=name)
+    e.setInput(0, inp)
+    for i, ch in enumerate(("rgba.red", "rgba.green", "rgba.blue", "rgba.alpha")):
+        try:
+            e["channel%d" % i].setValue(ch)
+        except Exception:
+            pass
+    for i, ex in enumerate(exprs):
+        e["expr%d" % i].setValue(ex)
+    e["expr3"].setValue("a")
+    _place(e, col, row)
+    return e
+
+
+def _build_color_nodes(group):
+    """Encode working space -> model space before the Writes, and decode the
+    result back after the Read (see colorspace.py). Values are set per
+    generation from Python, so the comp renders without the plugin."""
+    with group:
+        ref_s = group.node(REFORMAT_SRC)
+        read = group.node(READ_RESULT)
+        ref_r = group.node(REFORMAT_RECV)
+        # to model
+        tl = _expression(TO_MODEL_LOG, colorspace.ENCODE_EXPRS, ref_s, 2, 3.5)
+        to = nuke.nodes.OCIOColorSpace(name=TO_MODEL_OCIO)
+        to.setInput(0, ref_s)
+        _place(to, 2.8, 3.5)
+        tsw = nuke.nodes.Switch(name=TO_MODEL)
+        tsw.setInput(0, tl)
+        tsw.setInput(1, to)
+        tsw.setInput(2, ref_s)
+        tsw["which"].setValue(colorspace.SWITCH_INDEX["log"])
+        _place(tsw, 1, 4)
+        old_png = group.node(WRITE_SRC)
+        if old_png is not None:
+            old_png.setInput(0, tsw)
+            colorspace.set_raw(old_png, True)
+        else:
+            _make_write(WRITE_SRC, "rgb", True, 1, 5, tsw)
+        if group.node(WRITE_SRC_F) is None:
+            _make_write(WRITE_SRC_F, "rgb", True, 2, 5, tsw, file_type="tiff",
+                        datatype="32 bit float")
+        # from model
+        fl = _expression(FROM_MODEL_LOG, colorspace.DECODE_EXPRS, read, -1, 6.5)
+        fo = nuke.nodes.OCIOColorSpace(name=FROM_MODEL_OCIO)
+        fo.setInput(0, read)
+        _place(fo, -1.8, 6.5)
+        fsw = nuke.nodes.Switch(name=FROM_MODEL)
+        fsw.setInput(0, fl)
+        fsw.setInput(1, fo)
+        fsw.setInput(2, read)
+        fsw["which"].setValue(colorspace.SWITCH_INDEX["none"])
+        _place(fsw, 0, 7)
+        ref_r.setInput(0, fsw)
+
+
+def _add_color_knob(group, before_transfer=True):
+    k = nuke.Enumeration_Knob("gf_color_mode", "color pipeline", colorspace.MODES)
+    k.setTooltip(COLOR_TOOLTIP)
+    group.addKnob(k)
+    return k
+
+
+def _add_display_knob(group):
+    k = nuke.String_Knob("gf_display", "display colorspace", "auto")
+    k.setTooltip("Display colorspace for the Display transform mode, e.g. 'Output - Rec.709'. "
+                 "'auto' picks Rec.709 (then sRGB) output from your OCIO config.")
+    group.addKnob(k)
+    return k
 
 
 def _build_layer(group):
@@ -291,6 +496,28 @@ def ensure_current(group):
             and group.node(OUT_SWITCH) is not None and group.node(SRC_IN) is not None:
         _build_layer(group)
         changed = True
+    if group.node(TO_MODEL) is None and group.node(REFORMAT_SRC) is not None \
+            and group.node(READ_RESULT) is not None and group.node(REFORMAT_RECV) is not None:
+        _build_color_nodes(group)
+        changed = True
+    if "gf_color_mode" not in group.knobs():
+        _add_color_knob(group)
+        changed = True
+    elif list(group["gf_color_mode"].values()) != colorspace.MODES:
+        group["gf_color_mode"].setValues(colorspace.MODES)
+        changed = True
+    if "gf_display" not in group.knobs():
+        _add_display_knob(group)
+        changed = True
+    if group.node(ROTO) is None and group.node(SEL_SWITCH) is not None \
+            and group.node(SRC_IN) is not None:
+        _upgrade_selection(group)
+        changed = True
+    if "gf_shapes" not in group.knobs() and "gf_selection" in group.knobs():
+        _add_shape_knobs(group, upgrade=True)
+        changed = True
+    if "gf_transfer" in group.knobs():
+        group["gf_transfer"].setLabel("custom colorspace")
     knob = group.knobs().get("gf_output")
     if knob is not None and list(knob.values()) != OUTPUT_MODES:
         idx = int(knob.getValue())
@@ -299,6 +526,57 @@ def ensure_current(group):
         knob.setTooltip(OUTPUT_TOOLTIP)
         changed = True
     return changed
+
+
+def _upgrade_selection(group):
+    """Pre-0.7 nodes: Switch inputs were (Mask, Source); add the Roto in front."""
+    sw = group.node(SEL_SWITCH)
+    with group:
+        src = group.node(SRC_IN)
+        mask = group.node(MASK_IN)
+        roto = _make_roto(src)
+        roto.setXYpos(src.xpos() + 2 * 110, src.ypos())
+    sw.setInput(SEL_SHAPES, roto)
+    sw.setInput(SEL_MASK, mask)
+    sw.setInput(SEL_ALPHA, src)
+    knob = group.knobs().get("gf_selection")
+    if knob is not None:
+        old = int(knob.getValue())
+        knob.setValues(SELECTION_MODES)
+        knob.setTooltip(SELECTION_TOOLTIP)
+        knob.setValue(SEL_MASK if old == 0 else SEL_ALPHA)
+
+
+def _add_shape_knobs(group, upgrade=False):
+    """Draw Selection button + the built-in Roto's shape list on the main tab."""
+    knobs = []
+    b = nuke.PyScript_Knob("gf_draw", "\u270f Draw Selection",
+                           "import genfill.node; genfill.node.draw_selection(nuke.thisNode())")
+    b.setTooltip("Puts the Roto tools in the Viewer so you can draw the area to fill "
+                 "(they also appear whenever this panel is open with 'selection from' set to "
+                 "Shapes). Sets 'selection from' to Shapes.")
+    b.setFlag(nuke.STARTLINE)
+    knobs.append(b)
+    try:
+        link = nuke.Link_Knob("gf_shapes", "shapes")
+        link.setLink(ROTO + ".curves")
+        knobs.append(link)
+    except Exception:
+        pass   # older Nuke without linkable curves: the button still works
+    if upgrade:
+        # Moving existing knobs around would disturb the expressions that use them,
+        # so older nodes get the tools on their own tab instead.
+        group.addKnob(nuke.Tab_Knob("gf_shapes_tab", "Selection"))
+    for k in knobs:
+        group.addKnob(k)
+
+
+def draw_selection(group):
+    """Draw Selection button: Shapes mode, Roto tools in the Viewer."""
+    if "gf_selection" in group.knobs():
+        group["gf_selection"].setValue(SEL_SHAPES)
+    if not attach_roto_tools(group):
+        show_roto(group)       # fallback: the Roto's own panel
 
 
 def _add_knobs(group):
@@ -311,9 +589,9 @@ def _add_knobs(group):
 
     group.addKnob(nuke.Text_Knob("gf_div_sel", "Selection"))
     k = nuke.Enumeration_Knob("gf_selection", "selection from", SELECTION_MODES)
-    k.setTooltip("Where the area to fill comes from: the Mask input's alpha "
-                 "(e.g. a Roto) or the Source's own alpha.")
+    k.setTooltip(SELECTION_TOOLTIP)
     group.addKnob(k)
+    _add_shape_knobs(group)
     k = nuke.Double_Knob("gf_expand", "expand")
     k.setRange(0, 50)
     k.setValue(4)
@@ -365,10 +643,11 @@ def _add_knobs(group):
     group.addKnob(k)
 
     group.addKnob(nuke.Text_Knob("gf_div_color", "Color"))
-    k = nuke.String_Knob("gf_transfer", "8-bit colorspace", colorspace.DEFAULT)
-    k.setTooltip("Colorspace used for the 8-bit round trip to the model (Write out, Read back). "
-                 "'default' = the project's 8-bit files setting. Use your display / sRGB "
-                 "texture space name to override.")
+    _add_color_knob(group)
+    _add_display_knob(group)
+    k = nuke.String_Knob("gf_transfer", "custom colorspace", "matte_paint")
+    k.setTooltip("Only used when 'color pipeline' is Custom: the OCIO colorspace the plate is "
+                 "converted to for the model (and back from).")
     group.addKnob(k)
 
     group.addKnob(nuke.Text_Knob("gf_div_files", "Files"))
@@ -397,7 +676,7 @@ def _add_knobs(group):
 
 
 def create():
-    """Menu entry point: create a GenerativeFill node (plus a Roto for the selection)."""
+    """Menu entry point: create a GenerativeFill node (selection drawn on the node itself)."""
     selected = nuke.selectedNodes()
     upstream = selected[0] if len(selected) == 1 else None
     for n in nuke.allNodes():
@@ -412,26 +691,14 @@ def create():
     group["knobChanged"].setValue(KNOB_CHANGED)
     group["tile_color"].setValue(TILE_COLOR)
     group["label"].setValue("[value gf_info]")
-    group["help"].setValue("Photoshop-style Generative Fill. Draw a selection with the "
-                           "attached Roto (or use the Source alpha), type a prompt (or leave "
-                           "it empty to remove), and click Generate.")
+    group["help"].setValue("Photoshop-style Generative Fill. Click Draw Selection and draw "
+                           "shapes in the Viewer (or use the Mask input / Source alpha), type a "
+                           "prompt (or leave it empty to remove), and click Generate.")
 
     if upstream is not None:
         group.setInput(0, upstream)
         group.setXYpos(upstream.xpos(), upstream.ypos() + 90)
-    # A Roto for the selection, like a marquee/lasso in Photoshop.
-    roto = nuke.nodes.Roto()
-    roto.setName("GenFillSelection", uncollide=True)
-    roto["output"].setValue("alpha")
-    if "replace" in roto.knobs():
-        # Shapes replace the alpha instead of merging with the plate's alpha,
-        # so a plate with a solid alpha doesn't select the whole frame.
-        roto["replace"].setValue(True)
-    if upstream is not None:
-        roto.setInput(0, upstream)   # gives the Roto the plate's format
-    roto.setXYpos(group.xpos() + 150, group.ypos() - 30)
-    group.setInput(1, roto)
-    group["gf_selection"].setValue(0)
+    group["gf_selection"].setValue(SEL_SHAPES)
 
     group.setSelected(True)
     if nuke.GUI:
@@ -449,14 +716,20 @@ def knob_changed():
     name = knob.name()
     if name == "inputChange":
         has_mask = node.input(1) is not None
-        if has_mask and node["gf_selection"].getValue() == 1 and node.input(0) is not None \
-                and node.input(1) is not node.input(0):
-            node["gf_selection"].setValue(0)
-        elif not has_mask and node["gf_selection"].getValue() == 0:
-            node["gf_selection"].setValue(1)
+        sel = int(node["gf_selection"].getValue())
+        if has_mask and sel == SEL_SHAPES and not roto_has_shapes(node):
+            node["gf_selection"].setValue(SEL_MASK)
+        elif not has_mask and sel == SEL_MASK:
+            node["gf_selection"].setValue(SEL_SHAPES)
     elif name in ("gf_cache_dir", "gf_transfer", "showPanel"):
         from . import engine
         try:
             engine.refresh_result(node)
         except Exception as exc:  # never break the properties panel
             print("GenFill: could not refresh result: %s" % exc)
+        if name == "showPanel":
+            _sync_roto_tools(node)
+    elif name == "hidePanel":
+        _safe_call(detach_roto_tools, node)
+    elif name == "gf_selection":
+        _sync_roto_tools(node)

@@ -385,8 +385,8 @@ class GenFillPanel(QtWidgets.QWidget):
         self.empty.setObjectName("gfEmpty")
         el = QtWidgets.QVBoxLayout(self.empty)
         el.setContentsMargins(12, 14, 12, 14)
-        msg = QtWidgets.QLabel("Draw a selection in the GenFillSelection Roto (or use the "
-                               "Source alpha), describe what you want, and click Generate.\n"
+        msg = QtWidgets.QLabel("Click \u270f Draw Selection below and draw around an area in "
+                               "the Viewer, describe what you want, and click Generate.\n"
                                "Leave the prompt empty to remove the selected content.")
         msg.setObjectName("gfMuted")
         msg.setWordWrap(True)
