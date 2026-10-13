@@ -2,7 +2,7 @@
 
 Photoshop's Generative Fill as a Nuke node. Draw a selection on the node, type what you want (or
 leave the prompt empty to remove what's there), click **Generate** and pick from the variations.
-The plate never leaves your colour-managed, scene-linear comp: no round trip through Photoshop,
+The plate never leaves your color-managed, scene-linear comp: no round trip through Photoshop,
 no 8-bit sRGB export, no clipped highlights.
 
 ![node](nuke/icons/GenFill.png)
@@ -11,9 +11,9 @@ no 8-bit sRGB export, no clipped highlights.
   live on the GenerativeFill node. The Roto tools appear in the Viewer as soon as its panel is open.
 - **Free and local.** FLUX.1 Fill and LaMa run on your NVIDIA GPU inside the plugin. Nothing is
   uploaded and there are no tokens. Cloud models (Stability AI, OpenAI) are optional.
-- **Linear-safe.** An invertible colour encoding plus 32-bit float transport means generated
+- **Linear-safe.** An invertible color encoding plus 32-bit float transport means generated
   pixels come back into your working space with highlights above 1.0 intact. See
-  [Colour science](#colour-science-a-linear-pipeline-with-display-referred-models).
+  [Color science](#color-science-a-linear-pipeline-with-display-referred-models).
 - **Farm-safe.** The node is a Group of native Nuke nodes. Once you've picked a variation, the
   script renders anywhere, even where GenFill isn't installed.
 
@@ -28,12 +28,12 @@ Current version: **0.7.1** (see [CHANGELOG.md](CHANGELOG.md)).
 - [Quick start](#quick-start)
 - [The node](#the-node)
 - [Models](#models)
-- [Colour science: a linear pipeline with display-referred models](#colour-science-a-linear-pipeline-with-display-referred-models)
+- [Color science: a linear pipeline with display-referred models](#color-science-a-linear-pipeline-with-display-referred-models)
 - [Privacy and security](#privacy-and-security)
 - [Troubleshooting](#troubleshooting)
 - [Roadmap](#roadmap)
 - [Development](#development)
-- [Licences](#licences)
+- [Licenses](#licenses)
 
 ---
 
@@ -152,7 +152,7 @@ Source ── GenerativeFill ── output
 | negative prompt | Things to avoid (Stability) |
 | context | How much surrounding image the model sees, as a fraction of the selection size (default 0.35) |
 | min region | Smallest crop sent, in plate pixels (default 512) |
-| **color pipeline** | How the plate is encoded for the model. See [Colour science](#colour-science-a-linear-pipeline-with-display-referred-models) |
+| **color pipeline** | How the plate is encoded for the model. See [Color science](#color-science-a-linear-pipeline-with-display-referred-models) |
 | display colorspace | The display transform to use (`auto` = picked from your OCIO config, e.g. `Output - Rec.709`) |
 | custom colorspace | Used when *color pipeline* is *Custom* |
 | cache folder | Where results are stored. Empty = `<script folder>/genfill_cache/<node id>` |
@@ -171,7 +171,7 @@ Source ── GenerativeFill ── output
    position and blended through the expanded, feathered selection.
 
 Everything is stored per generation (region, frame, encoding, files), so selecting an older
-variation restores it exactly, even if you've changed the selection or colour settings since.
+variation restores it exactly, even if you've changed the selection or color settings since.
 
 ---
 
@@ -179,11 +179,11 @@ variation restores it exactly, even if you've changed the selection or colour se
 
 | Model | Good at | Notes |
 |---|---|---|
-| **Local: FLUX.1 Fill [dev]** (default) | High-quality fills, adding objects; free, offline | Your NVIDIA GPU, a hidden helper process (no windows, no ComfyUI). Float in, float out. **Non-commercial licence** |
+| **Local: FLUX.1 Fill [dev]** (default) | High-quality fills, adding objects; free, offline | Your NVIDIA GPU, a hidden helper process (no windows, no ComfyUI). Float in, float out. **Non-commercial license** |
 | Local removal (empty prompt) | Clean plates | Variation 1 is **LaMa** (fast, faithful); later variations run FLUX.1 Fill from the LaMa result at strength 0.8 for natural texture |
 | Stability AI | Masked inpainting; *Erase* for removal | Cloud, paid. 8-bit |
 | OpenAI GPT Image | Prompt following | Cloud, paid. Re-renders the crop; GenFill composites it back through the mask. 8-bit |
-| Offline Preview | Testing the pipeline | No AI; smears surrounding colour into the selection |
+| Offline Preview | Testing the pipeline | No AI; smears surrounding color into the selection |
 
 ### How the local AI runs
 
@@ -207,31 +207,31 @@ Nuke (GenFill plugin)                          %USERPROFILE%\GenFill-LocalAI\
 
 ---
 
-## Colour science: a linear pipeline with display-referred models
+## Color science: a linear pipeline with display-referred models
 
 ### The problem
 
 Every image generator available today (FLUX, Stable Diffusion, GPT Image, Firefly) is
 **display-referred**. They were trained on hundreds of millions of ordinary photographs:
 gamma-encoded, sRGB-ish images where values run from 0 (black) to 1 (display white). There is no
-concept of scene-linear light, nothing above 1.0 and no colour management. Inside, FLUX turns the
+concept of scene-linear light, nothing above 1.0 and no color management. Inside, FLUX turns the
 image into a latent with a VAE trained on those same images, and the output comes back in the
 same 0..1 display range.
 
 A Nuke comp is the opposite: **scene-linear** values (ACEScg, linear sRGB...) where 0.18 is mid
-grey, a white shirt might be 0.9, a window 4.0 and a specular glint 50.0.
+gray, a white shirt might be 0.9, a window 4.0 and a specular glint 50.0.
 
 Feed scene-linear values straight into a model and two things go wrong:
 
 1. **It looks wrong to the model.** Linear values viewed as display values look dark and
-   contrasty: mid grey 0.18 reads as near-black. The model "fixes" what it sees, so the fill
-   comes out too bright, too flat or the wrong colour once you're back in linear.
+   contrasty: mid gray 0.18 reads as near-black. The model "fixes" what it sees, so the fill
+   comes out too bright, too flat or the wrong color once you're back in linear.
 2. **Highlights are destroyed.** Everything above 1.0 has to be clamped to 1.0 before the model
    sees it, and nothing the model generates can be brighter than 1.0. A sky at 3.0 comes back
    as a flat 1.0 plateau.
 
 That's exactly what happens when you export a plate to Photoshop as an 8-bit sRGB / matte_paint
-image: highlights clipped at 1, quantised to 256 levels.
+image: highlights clipped at 1, quantized to 256 levels.
 
 ### The principle: encode, generate, decode
 
@@ -266,8 +266,8 @@ Source ─ Crop ─ Reformat ─ [to_model:   Expression (ACEScct) | OCIOColorSp
 Read (raw) ─ [from_model: inverse Expression | inverse OCIOColorSpace | none] ─ Reformat ─ Transform ─▶ Merge over Source
 ```
 
-The Write and Read are set to **raw**, so Nuke applies no extra colour conversion of its own and
-the encoding nodes are the only colour transform in the chain.
+The Write and Read are set to **raw**, so Nuke applies no extra color conversion of its own and
+the encoding nodes are the only color transform in the chain.
 
 ### The encodings
 
@@ -292,12 +292,12 @@ Things to know:
   values into the last few percent of 0..1, so the inverse stretches that region back out.
   A tiny difference near display white becomes a large difference in linear. This is why GenFill
   sends **float** to the local model: with 8-bit files, each step near white becomes a big jump in
-  linear, which shows up as banding and posterised highlights after the inverse.
+  linear, which shows up as banding and posterized highlights after the inverse.
 - **There's a ceiling.** Display white (1.0) decodes to the display transform's maximum
   scene value. Anything brighter in the plate is clamped to that maximum inside the fill. Pixels
   outside the selection are untouched.
 - **Gamut.** Display transforms map to the display's gamut (Rec.709). Very saturated
-  scene colours outside it come back approximated. Use Log when exact saturated colour matters.
+  scene colors outside it come back approximated. Use Log when exact saturated color matters.
 - It needs an output transform in your OCIO config. GenFill finds one automatically
   (`Output - Rec.709`, Rec.1886, sRGB display...) or uses the *display colorspace* you set. If the
   config has none, it falls back to Log.
@@ -319,14 +319,14 @@ decode:  x = 2^(17.52 · y − 9.72)               for y > 0.155251141552511
 |---|---|
 | −0.0069 | 0.0 |
 | 0 | 0.073 |
-| 0.18 (mid grey) | 0.414 |
+| 0.18 (mid gray) | 0.414 |
 | 1.0 | 0.555 |
 | 4.0 | 0.669 |
 | 16.0 | 0.783 |
 | 100.0 | 0.934 |
 | 222.86 | 1.0 |
 
-0..1 in ACEScct covers scene-linear −0.0069 to **222.86**, about 10 stops above mid grey, so
+0..1 in ACEScct covers scene-linear −0.0069 to **222.86**, about 10 stops above mid gray, so
 practically every highlight survives. Every stop takes the same share of the range (1/17.52 ≈
 0.057), which is ideal for precision. The inverse is exact to float precision, and because it is pure
 maths it behaves the same in every config and on the farm.
@@ -368,13 +368,13 @@ color: plate Read Read1 (colorspace 'ACES - ACES2065-1', .exr) -> display: Outpu
 ### Precision: why float transport matters
 
 Encoding solves the *range* problem. Bit depth decides how *finely* that range is sampled, and
-any quantisation is magnified by the inverse transfer:
+any quantization is magnified by the inverse transfer:
 
 | Transport | ACEScct: linear change per code value | Result after decode |
 |---|---|---|
 | 8-bit PNG | ×1.049 (**4.9 %** per step) | Visible banding in skies and soft gradients |
 | 16-bit | ×1.0002 (0.019 % per step) | Smooth |
-| **32-bit float TIFF** (local) | No file quantisation | Smooth; the model's own output is the only limit |
+| **32-bit float TIFF** (local) | No file quantization | Smooth; the model's own output is the only limit |
 
 The display transform's inverse is steeper still near white, so 8-bit is worse there.
 
@@ -391,9 +391,9 @@ So the local path is float end to end:
 To be clear about the limit: FLUX computes in bfloat16 inside a VAE latent, so the
 generated pixels carry the model's own precision. That precision shows up as fine,
 spatially-varying noise rather than banding, and it's far below grain level. Float transport
-makes sure GenFill adds no quantisation of its own on top.
+makes sure GenFill adds no quantization of its own on top.
 
-Cloud models only accept 8-bit PNG. They use the same encoding, just quantised, so prefer the
+Cloud models only accept 8-bit PNG. They use the same encoding, just quantized, so prefer the
 local model for HDR plates.
 
 ### What this does and doesn't give you
@@ -488,7 +488,7 @@ nuke/                       <- add this folder to NUKE_PATH (or use installers\i
     ui/                     Photoshop-style panel, Local AI dialog, API keys, Qt shim
 installers/                 install / dev install / uninstall / smoke test (Windows)
 tests/                      stdlib unittest with a fake nuke module; runs without Nuke
-docs/ARCHITECTURE.md        internals: node graph, generate flow, helper, colour
+docs/ARCHITECTURE.md        internals: node graph, generate flow, helper, color
 ```
 
 ```
@@ -501,12 +501,12 @@ generate → select → delete flow are tested with the offline backend. Interna
 
 ---
 
-## Licences
+## Licenses
 
 - **FLUX.1 Fill [dev]**: [FLUX.1 [dev] Non-Commercial License](https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev/blob/main/LICENSE.md).
-  The model may only be used non-commercially (personal, research, evaluation); read the licence
+  The model may only be used non-commercially (personal, research, evaluation); read the license
   for the terms on outputs before using them in paid work. GenFill downloads a community GGUF
-  quantisation of it.
+  quantization of it.
 - **LaMa**: Apache 2.0.
 - T5 / CLIP text encoders: Apache 2.0 / MIT.
 - Cloud backends: governed by your agreement with that provider.
