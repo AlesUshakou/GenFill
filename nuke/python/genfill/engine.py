@@ -35,6 +35,15 @@ class UserError(Exception):
     """Problem the artist can fix; shown as-is."""
 
 
+QUIET = False   # set by the smoke test: report errors in status, no popups
+
+
+def _notify(message):
+    print("GenFill: %s" % message)
+    if nuke.GUI and not QUIET:
+        nuke.message(message)
+
+
 # --------------------------------------------------------------------------
 # status (polled by the panel)
 # --------------------------------------------------------------------------
@@ -283,8 +292,13 @@ def _prepare(node, backend, frame, job_dir):
 # generate
 # --------------------------------------------------------------------------
 
-def generate(node, prompt=None):
-    """Start a generation. Returns False if it could not start."""
+def generate(node, prompt=None, blocking=False):
+    """Start a generation. Returns False if it could not start.
+
+    ``blocking=True`` runs the backend call on the calling thread and applies
+    the result before returning (used by the smoke test and terminal mode).
+    In that case the return value is True only if variations were added.
+    """
     if is_running(node):
         return False
     if prompt is not None:
@@ -323,13 +337,13 @@ def generate(node, prompt=None):
     except UserError as exc:
         node["gf_frame"].setValue(prev_frame)
         _set_status(uid, running=False, message="", error=str(exc))
-        nuke.message(str(exc))
+        _notify(str(exc))
         return False
     except Exception as exc:  # unexpected: show and log
         node["gf_frame"].setValue(prev_frame)
         traceback.print_exc()
         _set_status(uid, running=False, message="", error="Could not prepare: %s" % exc)
-        nuke.message("GenFill could not prepare the selection:\n%s" % exc)
+        _notify("GenFill could not prepare the selection:\n%s" % exc)
         return False
     finally:
         if proxy:
@@ -356,6 +370,10 @@ def generate(node, prompt=None):
         "abs_dir": job_dir,
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
     }
+    if blocking:
+        _worker(node, uid, backend, request, api_key, meta, job_dir,
+                dispatch=lambda fn, args: fn(*args), show_progress=False)
+        return not status(node).get("error")
     t = threading.Thread(target=_worker, args=(node, uid, backend, request, api_key, meta,
                                                job_dir), name="GenFill-%s" % uid)
     t.daemon = True
@@ -367,8 +385,24 @@ def cancel(node):
     _set_status(_uid(node), cancel_requested=True)
 
 
-def _worker(node, uid, backend, request, api_key, meta, job_dir):
-    task = nuke.ProgressTask("Generative Fill")
+class _NoProgress(object):
+    def setMessage(self, m):
+        pass
+
+    def setProgress(self, p):
+        pass
+
+    def isCancelled(self):
+        return False
+
+
+def _main_thread_dispatch(fn, args):
+    nuke.executeInMainThread(fn, args=args)
+
+
+def _worker(node, uid, backend, request, api_key, meta, job_dir,
+            dispatch=_main_thread_dispatch, show_progress=True):
+    task = nuke.ProgressTask("Generative Fill") if show_progress else _NoProgress()
     task.setMessage("Sending to %s..." % backend.label)
 
     def progress(frac, msg):
@@ -391,14 +425,14 @@ def _worker(node, uid, backend, request, api_key, meta, job_dir):
                 fh.write(data)
             files.append("%s/%s" % (meta["id"], name))
         meta["files"] = files
-        nuke.executeInMainThread(_finish, args=(node, uid, meta))
+        dispatch(_finish, (node, uid, meta))
     except Cancelled:
-        nuke.executeInMainThread(_fail, args=(node, uid, meta, "Cancelled.", False))
+        dispatch(_fail, (node, uid, meta, "Cancelled.", False))
     except BackendError as exc:
-        nuke.executeInMainThread(_fail, args=(node, uid, meta, str(exc), True))
+        dispatch(_fail, (node, uid, meta, str(exc), show_progress))
     except Exception as exc:
         traceback.print_exc()
-        nuke.executeInMainThread(_fail, args=(node, uid, meta, "Unexpected error: %s" % exc, True))
+        dispatch(_fail, (node, uid, meta, "Unexpected error: %s" % exc, show_progress))
     finally:
         del task
 
@@ -428,6 +462,7 @@ def _fail(node, uid, meta, message, show):
         return
     node["gf_frame"].setValue(int(meta.get("prev_frame", meta["frame"])))
     refresh_result(node)
-    print("GenFill: %s" % message)
     if show:
-        nuke.message("Generative Fill failed:\n\n%s" % message)
+        _notify("Generative Fill failed:\n\n%s" % message)
+    else:
+        print("GenFill: %s" % message)

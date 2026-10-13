@@ -362,8 +362,10 @@ def create():
 
     group = nuke.nodes.Group()
     group.setName(NODE_CLASS_LABEL, uncollide=True)
-    _build_internals(group)
+    # Knobs first: the internal nodes' expressions reference parent.gf_*,
+    # and Nuke reports "Nothing is named parent.gf_frame" if they don't exist yet.
     _add_knobs(group)
+    _build_internals(group)
     group["knobChanged"].setValue(KNOB_CHANGED)
     group["tile_color"].setValue(TILE_COLOR)
     group["label"].setValue("[value gf_info]")
@@ -389,7 +391,8 @@ def create():
     group["gf_selection"].setValue(0)
 
     group.setSelected(True)
-    nuke.show(group)
+    if nuke.GUI:
+        nuke.show(group)
     return group
 
 

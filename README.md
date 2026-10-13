@@ -33,21 +33,22 @@ What makes it work as a Nuke node:
 
 ## Install
 
-1. Add the `nuke` folder of this repo to Nuke's plugin path. Put this in
-   `C:\Users\<you>\.nuke\init.py` (create the file if it doesn't exist):
+Double-click **`installers\install.bat`**. It runs the tests, copies the current build to
+`%USERPROFILE%\.nuke\plugins\GenFill`, stamps it with the version and git commit, and adds a
+managed block to your `.nuke\init.py`. Run it again whenever you want to test the latest
+code. See [installers/README.md](installers/README.md) for the details, dev mode and uninstall.
 
-   ```python
-   import nuke
-   nuke.pluginAddPath(r"C:/Users/Connor/OneDrive/Documents/repository/GenFill/nuke")
-   ```
+Then:
 
-   (Or add that folder to the `NUKE_PATH` environment variable.)
-2. Restart Nuke. You'll find **GenFill > Generative Fill** in the Nodes toolbar, or Tab-search
-   "Generative Fill".
-3. Set an API key: **GenFill > API Keys...** or the node's *Settings* tab. Alternatively set
+1. Start Nuke. You'll find **GenFill > Generative Fill** in the Nodes toolbar, or Tab-search
+   "Generative Fill". The Script Editor prints which build loaded.
+2. Set an API key: **GenFill > API Keys...** or the node's *Settings* tab. Alternatively set
    `STABILITY_API_KEY` / `OPENAI_API_KEY` in your environment.
+3. Optional: **GenFill > Developer > Run Smoke Test** checks the build end to end with the
+   offline backend and writes a report to `test_output\`.
 
-Supported: Nuke 13 to 16+ (Python 3, PySide2 or PySide6). Windows, macOS, Linux.
+Supported: Nuke 13 to 16+ (Python 3, PySide2 or PySide6). The installer is Windows-only for
+now; on macOS/Linux add the repo's `nuke` folder to `NUKE_PATH`.
 
 ## Use
 
@@ -115,8 +116,10 @@ nuke/                 <- add this folder to NUKE_PATH
     state.py          variation history stored on the node (pure Python)
     colorspace.py     the colour round trip (where HDR modes will slot in)
     config.py         API keys and cache defaults
+    devtools.py       Reload GenFill + in-Nuke smoke test
     backends/         stability.py, openai_images.py, mock.py
     ui/               Photoshop-style panel (panel.py), API key dialog, Qt shim
+installers/           install / dev-install / uninstall / smoke test (Windows)
 tests/                stdlib unittest; runs without Nuke
 docs/ARCHITECTURE.md
 ```

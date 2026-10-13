@@ -53,6 +53,12 @@ class Knob(object):
         return list(self._values)
 
     def setExpression(self, e):
+        # Like Nuke, complain if a parent.<knob> reference doesn't exist yet.
+        import re
+        for ref in re.findall(r"parent\.(\w+)", e):
+            group = _context[-1] if _context else None
+            if group is None or ref not in group._knobs:
+                EXPRESSION_ERRORS.append("Nothing is named parent.%s (%s)" % (ref, self._name))
         self.expression = e
 
     def setFlag(self, f):
@@ -100,6 +106,7 @@ _context = []
 _root_nodes = []
 _counter = [0]
 EXECUTED = []
+EXPRESSION_ERRORS = []
 SELECTION_BOX = [0.4, 0.3, 0.6, 0.6]   # normalised x0, y0(top), x1, y1 for the probe
 
 
@@ -164,6 +171,12 @@ class Node(object):
     def setSelected(self, s):
         pass
 
+    def nodes(self):
+        return list(self._children)
+
+    def fullName(self):
+        return self._name
+
     def node(self, name):
         for c in self._children:
             if c._name == name:
@@ -223,6 +236,32 @@ def show(n):
     pass
 
 
+NUKE_VERSION_STRING = "fake"
+
+
+def _all(container):
+    out = []
+    for c in container._children:
+        out.append(c)
+        out.extend(_all(c))
+    return out
+
+
+def delete(n):
+    for holder in [_root] + _all(_root):
+        if n in holder._children:
+            holder._children.remove(n)
+    if n in _root_nodes:
+        _root_nodes.remove(n)
+
+
+def toNode(name):
+    for n in _root_nodes:
+        if n._name == name:
+            return n
+    return None
+
+
 def message(m):
     print("nuke.message:", m)
 
@@ -230,7 +269,10 @@ def message(m):
 def _box_size(write):
     """Find the upstream Reformat box size for a Write."""
     up = write.input(0)
-    return int(up["box_width"].value()), int(up["box_height"].value())
+    try:
+        return int(up["box_width"].value()), int(up["box_height"].value())
+    except (TypeError, ValueError):
+        return 64, 36   # rendering a node without a box (e.g. the whole Group)
 
 
 def execute(write, first, last, incr=1):
