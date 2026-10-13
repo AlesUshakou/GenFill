@@ -44,7 +44,9 @@ Then:
    "Generative Fill". The Script Editor prints which build loaded.
 2. Set an API key: **GenFill > API Keys...** or the node's *Settings* tab. Alternatively set
    `STABILITY_API_KEY` / `OPENAI_API_KEY` in your environment.
-3. Optional: **GenFill > Developer > Run Smoke Test** checks the build end to end with the
+3. For the free local model: **GenFill > Local AI > Install / Repair...** (one-time, ~25 GB,
+   runs in the background).
+4. Optional: **GenFill > Developer > Run Smoke Test** checks the build end to end with the
    offline backend and writes a report to `test_output\`.
 
 Supported: Nuke 13 to 16+ (Python 3, PySide2 or PySide6). The installer is Windows-only for
@@ -83,20 +85,21 @@ shows which frame a variation came from.
 
 | Backend | Good at | Notes |
 |---|---|---|
-| Stability AI | True masked inpainting; best at *removal* (empty prompt → Erase model) | ~1 MP per request, one request per variation. Key from platform.stability.ai |
-| OpenAI GPT Image | Prompt following, adding objects | Re-renders the crop, which we composite back through the mask. `gpt-image-2` default; fixed-size models (`gpt-image-1`, `1.5`) are handled |
+| **Local: FLUX.1 Fill** | Free, offline, no tokens. Strong fill quality; LaMa for clean removal | Runs on your NVIDIA GPU inside the plugin (a hidden helper, no windows). Install from **GenFill > Local AI > Install** (~25 GB). FLUX.1 [dev] licence: **non-commercial** |
+| Stability AI | True masked inpainting; best at *removal* (empty prompt → Erase model) | Cloud, paid. ~1 MP per request, one request per variation |
+| OpenAI GPT Image | Prompt following, adding objects | Cloud, paid. Re-renders the crop, which we composite back through the mask |
 | Offline Preview | Testing the pipeline, no network | Smears surrounding colour into the selection; not AI |
 
 > **Data note:** cloud backends upload the crop (not the whole frame) to that provider. Check
-> your client / TPN rules before using them on production plates. A local backend (ComfyUI) is
-> on the roadmap for exactly this reason.
+> your client / TPN rules before using them on production plates. The Local model never sends anything off
+> your machine.
 
 ## Roadmap
 
 - **HDR**: invertible tone-mapped transfer so values above 1.0 survive the round trip, then
   16-bit / float pipelines for models that support them. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#hdr-roadmap).
-- Local generation (ComfyUI / diffusers) for studios that can't send plates to the cloud.
+- A commercially licensed local model option (e.g. Qwen-Image-Edit, Apache 2.0).
 - Adobe Firefly Fill (the actual Photoshop model) for studios with Firefly Services access.
 - Reference image input, like Photoshop's "Reference image".
 - Track-and-apply: stick a still fill to a moving plate via a tracker / CornerPin.
@@ -117,6 +120,7 @@ nuke/                 <- add this folder to NUKE_PATH
     colorspace.py     the colour round trip (where HDR modes will slot in)
     config.py         API keys and cache defaults
     devtools.py       Reload GenFill + in-Nuke smoke test
+    localai/          free local AI: installer, hidden helper (worker.py), Nuke-side client
     backends/         stability.py, openai_images.py, mock.py
     ui/               Photoshop-style panel (panel.py), API key dialog, Qt shim
 installers/           install / dev-install / uninstall / smoke test (Windows)

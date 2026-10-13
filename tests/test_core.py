@@ -193,7 +193,7 @@ class BackendTests(unittest.TestCase):
                                       seed=7, count=count)
 
     def test_registry(self):
-        self.assertEqual(backends.ids(), ["stability", "openai", "mock"])
+        self.assertEqual(backends.ids(), ["local", "stability", "openai", "mock"])
         self.assertEqual(backends.get("mock").label, "Offline Preview (no AI)")
 
     def test_multipart(self):

@@ -61,6 +61,24 @@ if ($nukes.Count -eq 0) {
     foreach ($n in $nukes) { Write-Ok ("{0}  ({1})" -f $n.Name, $n.Exe) }
 }
 
+# ---------------------------------------------------------------- obsolete files
+# Files from older GenFill versions that no longer exist in the repo.
+$Obsolete = @(
+    'nuke\python\genfill\backends\comfyui.py',
+    'tests\test_comfyui.py',
+    'installers\install_local_ai.ps1',
+    'installers\install_local_ai.bat',
+    'installers\start_local_ai.ps1',
+    'installers\start_local_ai.bat'
+)
+foreach ($rel in $Obsolete) {
+    $p = Join-Path $Repo $rel
+    if (Test-Path -LiteralPath $p) {
+        Remove-Item -LiteralPath $p -Force
+        Write-Ok "Removed obsolete file $rel"
+    }
+}
+
 # ---------------------------------------------------------------- tests
 if ($SkipTests) {
     Write-Warn 'Skipping tests (-SkipTests).'

@@ -15,6 +15,26 @@ import os
 from .qt import QtCore, QtGui, QtWidgets, Qt
 from . import style
 
+def _safe(fn):
+    """Qt swallows exceptions raised in slots; log them and show them instead."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception as exc:
+            try:
+                from .. import log as gflog
+                gflog.exception("Panel action %s failed", fn.__name__)
+                where = gflog.log_path()
+            except Exception:
+                where = "the Script Editor"
+            self._show_local_error("%s failed: %s (details in %s)" % (fn.__name__.strip("_"),
+                                                                    exc, where))
+    return wrapper
+
+
 THUMB_W = 132
 THUMB_H = 92
 COLUMNS = 3
@@ -262,6 +282,13 @@ class GenFillPanel(QtWidgets.QWidget):
         self.model.addItems(self.ctl.backend_labels())
         self.model.currentTextChanged.connect(self._on_model)
         head.addWidget(self.model)
+        self.local_btn = QtWidgets.QToolButton()
+        self.local_btn.setObjectName("gfIcon")
+        self.local_btn.setText(u"\u2699 Local AI...")
+        self.local_btn.setToolTip("Install, repair or check the free local AI "
+                                  "(also in GenFill > Local AI)")
+        self.local_btn.clicked.connect(self._on_local_ai)
+        head.addWidget(self.local_btn)
         root.addLayout(head)
 
         # Contextual task bar
@@ -375,26 +402,45 @@ class GenFillPanel(QtWidgets.QWidget):
         self.setMinimumWidth(3 * (THUMB_W + 12))
 
     # events -----------------------------------------------------------------
+    @_safe
+    def _on_local_ai(self, *args):
+        from . import localai_dialog
+        localai_dialog.show()
+
+    @_safe
     def _on_model(self, label):
         if label and label != self.ctl.backend_label():
             self.ctl.set_backend_label(label)
 
-    def _on_generate(self):
+    @_safe
+    def _on_generate(self, *args):
         if self.ctl.status().get("running"):
             self.ctl.cancel()
             return
         text = self.prompt.text()
         self.ctl.set_prompt(text)
-        self.ctl.generate(text)
+        # Immediate feedback: preparing the crop renders on the main thread.
+        self._local_error = ""
+        self.status.setObjectName("gfMuted")
+        self.status.setText("Preparing selection...")
+        self.status.setVisible(True)
+        self.generate_btn.setEnabled(False)
+        QtWidgets.QApplication.processEvents()
+        try:
+            self.ctl.generate(text)
+        finally:
+            self.generate_btn.setEnabled(True)
         self._sync(force=True)
 
-    def _on_delete_selected(self):
+    @_safe
+    def _on_delete_selected(self, *args):
         for t in self.ctl.thumbnails():
             if t["selected"]:
                 self.ctl.delete(t["gi"], t["vi"])
                 break
         self._sync(force=True)
 
+    @_safe
     def _on_thumb_menu(self, gi, vi, pos):
         info = next((t for t in self.ctl.thumbnails() if t["gi"] == gi and t["vi"] == vi), None)
         if info is None:
@@ -418,7 +464,29 @@ class GenFillPanel(QtWidgets.QWidget):
         self._sync(force=True)
 
     # sync -------------------------------------------------------------------
+    def _show_local_error(self, text):
+        self._local_error = text
+        self.status.setObjectName("gfError")
+        self.status.setText(text)
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+        self.status.setVisible(True)
+
     def _sync(self, force=False):
+        try:
+            self._sync_impl(force)
+        except Exception as exc:
+            key = str(exc)
+            if key != getattr(self, "_last_sync_error", None):
+                self._last_sync_error = key
+                try:
+                    from .. import log as gflog
+                    gflog.exception("Panel refresh failed")
+                except Exception:
+                    pass
+                self._show_local_error("Panel refresh failed: %s" % exc)
+
+    def _sync_impl(self, force=False):
         if not self.ctl.alive():
             self._timer.stop() if hasattr(self, "_timer") else None
             return
@@ -434,6 +502,7 @@ class GenFillPanel(QtWidgets.QWidget):
             self.model.setCurrentText(label)
             self.model.blockSignals(False)
         self.model.setToolTip(self.ctl.backend_description())
+        self.local_btn.setVisible(label.startswith("Local"))
 
         # prompt (don't fight the user while typing)
         if not self.prompt.hasFocus() and self.prompt.text() != self.ctl.prompt():
@@ -448,12 +517,12 @@ class GenFillPanel(QtWidgets.QWidget):
         self.generate_btn.style().polish(self.generate_btn)
         self.progress.setVisible(running)
         self.progress.setValue(int(100 * max(0.03, float(st.get("progress") or 0))))
-        if st.get("error"):
+        if st.get("error") or getattr(self, "_local_error", ""):
             self.status.setObjectName("gfError")
-            self.status.setText(st["error"])
+            self.status.setText(st.get("error") or self._local_error)
         else:
             self.status.setObjectName("gfMuted")
-            self.status.setText(st.get("message", "") if running else "")
+            self.status.setText(st.get("message", "") if (running or st.get("message")) else "")
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
         self.status.setVisible(bool(self.status.text()))
@@ -497,6 +566,7 @@ class GenFillPanel(QtWidgets.QWidget):
         rows = max(1, (len(thumbs) + COLUMNS - 1) // COLUMNS)
         self.scroll.setFixedHeight(min(3, rows) * (THUMB_H + 12) + 2)
 
+    @_safe
     def _on_thumb_clicked(self, gi, vi):
         self.ctl.select(gi, vi)
         self._sync(force=True)

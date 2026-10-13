@@ -7,7 +7,7 @@ tested outside Nuke.
 import json
 import os
 
-__version__ = "0.2.1"
+__version__ = "0.4.7"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD_INFO_PATH = os.path.join(_HERE, "build_info.json")

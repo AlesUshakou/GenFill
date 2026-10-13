@@ -11,6 +11,10 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 
+# Keep test runs out of the artist's real log file.
+import tempfile as _tempfile  # noqa: E402
+os.environ.setdefault("GENFILL_LOG", os.path.join(_tempfile.gettempdir(), "genfill_test.log"))
+
 from genfill import pngio  # noqa: E402
 
 STARTLINE = 1

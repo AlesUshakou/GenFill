@@ -6,11 +6,12 @@ To add one: subclass :class:`base.Backend`, then append an instance to
 from __future__ import annotations
 
 from .base import Backend, BackendError, Cancelled, GenerationRequest
+from .local import LocalBackend
 from .mock import MockBackend
 from .openai_images import OpenAIBackend
 from .stability import StabilityBackend
 
-_BACKENDS = [StabilityBackend(), OpenAIBackend(), MockBackend()]
+_BACKENDS = [LocalBackend(), StabilityBackend(), OpenAIBackend(), MockBackend()]
 
 __all__ = ["Backend", "BackendError", "Cancelled", "GenerationRequest", "all_backends", "get"]
 

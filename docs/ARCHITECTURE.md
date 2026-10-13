@@ -74,6 +74,34 @@ scripts saved after generating.
 They're pure Python (stdlib `urllib`) and know nothing about Nuke, so they're unit tested with
 mocked HTTP. To add one, subclass, then register it in `backends/__init__.py`.
 
+## Local AI (free, offline)
+
+```
+Nuke (GenFill plugin)                         GenFill-LocalAI\ (outside OneDrive)
+  backends/local.py                             env\  private Python 3.12 + PyTorch CUDA
+  localai/client.py  --- JSON lines over --->   localai/worker.py (hidden helper process)
+                         stdin / stdout           FLUX.1 Fill [dev] GGUF (diffusers)
+                                                  T5-XXL (loaded briefly per new prompt)
+                                                  CLIP-L, FLUX VAE, LaMa (TorchScript)
+```
+
+- **Why a separate process:** PyTorch and ~10 GB of model weights never load into Nuke. A crash
+  or GPU out-of-memory becomes an error in the panel; Nuke and the script stay alive, and
+  PyTorch's CUDA libraries can't clash with Nuke's (CopyCat/Cattery).
+- **Lifecycle:** started hidden (`CREATE_NO_WINDOW`) on the first Local generation; model stays
+  loaded between generations; exits when Nuke closes the pipe, on *Stop AI Helper*, or after
+  10 idle minutes. Nuke's `PYTHONPATH`/`PYTHONHOME` are stripped from its environment.
+- **Memory on 12 GB GPUs:** FLUX Q4_K_S (6.8 GB) stays on the GPU. T5 (9.5 GB) is loaded straight
+  to the GPU only while a new prompt is encoded (the transformer is parked in system RAM for those
+  seconds), then freed. Encodings are cached per prompt.
+- **Removal (empty prompt):** variation 1 is LaMa; later variations run FLUX.1 Fill at strength
+  0.8 starting from the LaMa result, which adds texture while staying a clean plate.
+- **Installer** (`localai/installer.py`, dialog in `ui/localai_dialog.py`): uv builds the private
+  Python, then PyTorch (cu128) and diffusers/transformers/gguf are installed, the models are
+  downloaded from public repositories (no login), the diffusers configs for FLUX.1 Fill are
+  written locally (the official repos are gated), and a self-test runs on the GPU.
+  `manifest.json` marks a complete install.
+
 ## Colour
 
 `colorspace.py` owns the round trip. v0.1 uses **SDR 8-bit**: Write and Read share one

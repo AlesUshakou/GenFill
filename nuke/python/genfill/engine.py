@@ -12,17 +12,18 @@ Flow of one Generate click (mirrors Photoshop):
 """
 from __future__ import annotations
 
+import base64
 import datetime
 import os
 import subprocess
 import sys
 import threading
-import traceback
 
 import nuke
 
 from . import backends, colorspace, config, pngio, region, state as gfstate
 from . import node as gfnode
+from . import log as gflog
 from .backends import BackendError, Cancelled, GenerationRequest
 
 PROBE_LONG_SIDE = 192
@@ -112,12 +113,32 @@ def _fwd(path):
 # state helpers
 # --------------------------------------------------------------------------
 
+STATE_PREFIX = "b64:"
+
+
+def decode_state(text):
+    """Knob text -> state. Stored base64-encoded: the knob is a TCL-evaluated
+    string knob and raw JSON brackets would be treated as TCL commands."""
+    text = (text or "").strip()
+    if text.startswith(STATE_PREFIX):
+        try:
+            text = base64.b64decode(text[len(STATE_PREFIX):].encode("ascii")).decode("utf-8")
+        except Exception:
+            gflog.exception("Could not decode stored GenFill state; starting empty")
+            text = ""
+    return gfstate.loads(text)
+
+
+def encode_state(st):
+    return STATE_PREFIX + base64.b64encode(gfstate.dumps(st).encode("utf-8")).decode("ascii")
+
+
 def get_state(node):
-    return gfstate.loads(node["gf_state"].value())
+    return decode_state(node["gf_state"].value())
 
 
 def _save_state(node, st):
-    node["gf_state"].setValue(gfstate.dumps(st))
+    node["gf_state"].setValue(encode_state(st))
 
 
 def _internal(node, name):
@@ -152,9 +173,11 @@ def refresh_result(node):
     order = gfstate.variations(st)
     idx = order.index((gi, vi)) + 1
     prompt = gen.get("prompt") or "(remove)"
+    for bad, good in (("[", "("), ("]", ")"), ("{", "("), ("}", ")"), ("$", ""), ("\\", "/")):
+        prompt = prompt.replace(bad, good)
     if len(prompt) > 28:
         prompt = prompt[:27] + u"…"
-    node["gf_info"].setValue("%s  [%d/%d]" % (prompt, idx, len(order)))
+    node["gf_info"].setValue("%s  (%d/%d)" % (prompt, idx, len(order)))
 
 
 def select(node, gi, vi):
@@ -223,6 +246,7 @@ def open_cache(node):
 
 def _execute(node, write_name, path, frame):
     w = _internal(node, write_name)
+    gflog.debug("render %s frame %s -> %s", write_name, frame, path)
     w["file"].setValue(_fwd(path))
     w["disable"].setValue(False)
     try:
@@ -255,6 +279,7 @@ def _prepare(node, backend, frame, job_dir):
     probe_path = os.path.join(job_dir, "probe.png")
     _execute(node, gfnode.PROBE_WRITE, probe_path, frame)
     bbox = region.mask_bbox(pngio.read(probe_path))
+    gflog.info("selection probe %dx%d of %dx%d plate: bbox %s", pw, ph, fw, fh, bbox)
     if bbox is None:
         raise UserError("The selection is empty on frame %d.\nDraw a shape in the "
                         "GenFillSelection Roto (or check the Mask / Source alpha)." % frame)
@@ -268,6 +293,9 @@ def _prepare(node, backend, frame, job_dir):
     mw, mh = backend.model_size(rough.w, rough.h, model)
     reg = region.expand_region(box, fw, fh, context=context, min_size=min_size,
                                aspect=float(mw) / mh)
+
+    gflog.info("region x=%d y=%d w=%d h=%d -> model size %dx%d (%s)", reg.x, reg.y, reg.w, reg.h,
+               mw, mh, backend.id)
 
     # 3. crops
     for crop_name, ref_name in ((gfnode.CROP_SRC, gfnode.REFORMAT_SRC),
@@ -299,25 +327,46 @@ def generate(node, prompt=None, blocking=False):
     the result before returning (used by the smoke test and terminal mode).
     In that case the return value is True only if variations were added.
     """
+    gflog.info("Generate clicked on %s (blocking=%s)", node.fullName(), blocking)
     if is_running(node):
+        gflog.warning("A generation is already running on %s; ignoring click", node.fullName())
+        _set_status(_uid(node), message="Already generating. Click Cancel to stop it.")
         return False
     if prompt is not None:
         node["gf_prompt"].setValue(prompt)
     prompt = node["gf_prompt"].value()
     backend = gfnode.backend_for(node)
+    gflog.info("backend=%s model=%r prompt=%r frame=%s", backend.id, node["gf_model"].value(),
+               prompt, nuke.frame())
+    if getattr(backend, "is_installed", None) is not None and not backend.is_installed():
+        msg = "Local AI isn't installed yet. Click 'Local AI...' in the node's panel to install it."
+        gflog.warning(msg)
+        _set_status(_uid(node), running=False, message="", error=msg)
+        if nuke.GUI and not QUIET and nuke.ask(
+                "Local AI isn't installed yet.\n\nOpen the installer now? It downloads about 25 GB "
+                "in the background while you keep working."):
+            from .ui import localai_dialog
+            localai_dialog.show()
+        return False
     api_key = ""
     if backend.needs_key:
         api_key = config.get_api_key(backend.id, backend.env_var)
         if not api_key:
+            gflog.info("No API key for %s; showing the API Keys dialog", backend.id)
             from .ui import settings
-            if not settings.show(focus=backend.id):
-                return False
+            settings.show(focus=backend.id)
             api_key = config.get_api_key(backend.id, backend.env_var)
             if not api_key:
+                msg = ("No API key set for %s. Add one with API Keys..., or switch the model "
+                       "to Offline Preview to test without a key." % backend.label)
+                gflog.warning(msg)
+                _set_status(_uid(node), running=False, message="", error=msg)
                 return False
 
     uid = _uid(node)
     st = get_state(node)
+    gflog.info("node uid=%s has %d earlier generation(s) (state knob: %d chars)", uid,
+               len(st["generations"]), len(node["gf_state"].value() or ""))
     frame = int(nuke.frame())
     prev_frame = int(node["gf_frame"].value())
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -335,13 +384,14 @@ def generate(node, prompt=None, blocking=False):
         node["gf_frame"].setValue(frame)
         reg, mw, mh, fmt, files = _prepare(node, backend, frame, job_dir)
     except UserError as exc:
+        gflog.warning("Cannot generate: %s", exc)
         node["gf_frame"].setValue(prev_frame)
         _set_status(uid, running=False, message="", error=str(exc))
         _notify(str(exc))
         return False
     except Exception as exc:  # unexpected: show and log
+        gflog.exception("Preparing the selection failed")
         node["gf_frame"].setValue(prev_frame)
-        traceback.print_exc()
         _set_status(uid, running=False, message="", error="Could not prepare: %s" % exc)
         _notify("GenFill could not prepare the selection:\n%s" % exc)
         return False
@@ -370,6 +420,7 @@ def generate(node, prompt=None, blocking=False):
         "abs_dir": job_dir,
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
     }
+    gflog.info("starting %s: %d variation(s) at %dx%d, job %s", backend.id, count, mw, mh, job_dir)
     if blocking:
         _worker(node, uid, backend, request, api_key, meta, job_dir,
                 dispatch=lambda fn, args: fn(*args), show_progress=False)
@@ -402,22 +453,35 @@ def _main_thread_dispatch(fn, args):
 
 def _worker(node, uid, backend, request, api_key, meta, job_dir,
             dispatch=_main_thread_dispatch, show_progress=True):
-    task = nuke.ProgressTask("Generative Fill") if show_progress else _NoProgress()
-    task.setMessage("Sending to %s..." % backend.label)
+    dispatched = [False]
 
-    def progress(frac, msg):
-        task.setProgress(int(5 + 90 * frac))
-        task.setMessage(msg)
-        _set_status(uid, progress=frac, message=msg)
+    def send(fn, args):
+        dispatched[0] = True
+        dispatch(fn, args)
 
-    def cancelled():
-        with _jobs_lock:
-            requested = _jobs.get(uid, {}).get("cancel_requested", False)
-        return requested or task.isCancelled()
-
-    _set_status(uid, message="Generating...", progress=0.05, cancel_requested=False)
+    task = None
     try:
+        try:
+            task = nuke.ProgressTask("Generative Fill") if show_progress else _NoProgress()
+        except Exception:
+            gflog.exception("Could not create a progress window; continuing without one")
+            task = _NoProgress()
+        task.setMessage("Sending to %s..." % backend.label)
+
+        def progress(frac, msg):
+            task.setProgress(int(5 + 90 * frac))
+            task.setMessage(msg)
+            _set_status(uid, progress=frac, message=msg)
+            gflog.debug("progress %.0f%% %s", frac * 100, msg)
+
+        def cancelled():
+            with _jobs_lock:
+                requested = _jobs.get(uid, {}).get("cancel_requested", False)
+            return requested or task.isCancelled()
+
+        _set_status(uid, message="Generating...", progress=0.05, cancel_requested=False)
         images = backend.generate(request, api_key, progress=progress, cancelled=cancelled)
+        gflog.info("%s returned %d image(s)", backend.id, len(images))
         files = []
         for i, data in enumerate(images):
             name = "var_%02d.png" % (i + 1)
@@ -425,16 +489,21 @@ def _worker(node, uid, backend, request, api_key, meta, job_dir,
                 fh.write(data)
             files.append("%s/%s" % (meta["id"], name))
         meta["files"] = files
-        dispatch(_finish, (node, uid, meta))
+        send(_finish, (node, uid, meta))
     except Cancelled:
-        dispatch(_fail, (node, uid, meta, "Cancelled.", False))
+        gflog.info("Generation cancelled")
+        send(_fail, (node, uid, meta, "Cancelled.", False))
     except BackendError as exc:
-        dispatch(_fail, (node, uid, meta, str(exc), show_progress))
+        gflog.error("Backend error: %s", exc)
+        send(_fail, (node, uid, meta, str(exc), show_progress))
     except Exception as exc:
-        traceback.print_exc()
-        dispatch(_fail, (node, uid, meta, "Unexpected error: %s" % exc, show_progress))
+        gflog.exception("Unexpected error while generating")
+        send(_fail, (node, uid, meta, "Unexpected error: %s" % exc, show_progress))
     finally:
-        del task
+        task = None
+        if not dispatched[0]:
+            # Never leave the node stuck in "running".
+            _set_status(uid, running=False, error="Generation stopped unexpectedly (see log).")
 
 
 def _node_alive(node):
@@ -446,22 +515,39 @@ def _node_alive(node):
 
 
 def _finish(node, uid, meta):
-    _set_status(uid, running=False, progress=1.0, message="", error="")
-    if not _node_alive(node):
-        return
-    meta = dict(meta)
-    meta.pop("prev_frame", None)
-    st = gfstate.add_generation(get_state(node), meta, select_first=True)
-    _save_state(node, st)
-    refresh_result(node)
+    try:
+        if not _node_alive(node):
+            gflog.warning("Node was deleted before the result arrived")
+            return
+        meta = dict(meta)
+        meta.pop("prev_frame", None)
+        st = gfstate.add_generation(get_state(node), meta, select_first=True)
+        _save_state(node, st)
+        readback = get_state(node)
+        if len(readback["generations"]) != len(st["generations"]):
+            gflog.warning("State did not stick: wrote %d generation(s), read back %d",
+                          len(st["generations"]), len(readback["generations"]))
+        refresh_result(node)
+        gflog.info("Added generation %s with %d variation(s); selected the first",
+                   meta["id"], len(meta.get("files", [])))
+        _set_status(uid, running=False, progress=1.0, message="", error="")
+    except Exception as exc:
+        gflog.exception("Applying the generated result failed")
+        _set_status(uid, running=False, progress=0.0, message="",
+                    error="Generated, but applying the result failed: %s (see log)" % exc)
+        _notify("Generative Fill: the images were generated but could not be applied:\n%s\n\n"
+                "Log: %s" % (exc, gflog.log_path()))
 
 
 def _fail(node, uid, meta, message, show):
     _set_status(uid, running=False, progress=0.0, message="", error=message)
     if not _node_alive(node):
         return
-    node["gf_frame"].setValue(int(meta.get("prev_frame", meta["frame"])))
-    refresh_result(node)
+    try:
+        node["gf_frame"].setValue(int(meta.get("prev_frame", meta["frame"])))
+        refresh_result(node)
+    except Exception:
+        gflog.exception("Restoring the node after a failed generation also failed")
     if show:
         _notify("Generative Fill failed:\n\n%s" % message)
     else:

@@ -57,3 +57,8 @@ network needed), renders the results and writes everything to `test_output\` in 
 - `panel.png`: a screenshot of the GenFill panel
 
 Claude can read `test_output\` directly, so after a run you can just say "check the smoke test".
+
+## Local AI
+
+The free local model is installed from inside Nuke, not from here:
+**GenFill > Local AI > Install / Repair...**. See the main README.

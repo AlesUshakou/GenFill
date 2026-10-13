@@ -60,6 +60,12 @@ def reload_genfill(verbose=True):
 
     Open GenerativeFill panels pick up the new code when they're reopened.
     """
+    # Stop the Local AI helper first: after the reload nothing would own it.
+    try:
+        from genfill.localai import client as _lc
+        _lc.stop_helper()
+    except Exception:
+        pass
     names = [n for n in list(sys.modules) if n == "genfill" or n.startswith("genfill.")]
     for n in names:
         del sys.modules[n]
@@ -277,7 +283,7 @@ def run_smoke_test(output_dir=None, show_result=True):
     def generate():
         g = ctx["g"]
         ok = engine.generate(g, "smoke test", blocking=True)
-        st = gfstate.loads(g["gf_state"].value())
+        st = engine.get_state(g)
         if not ok or not st["generations"]:
             raise RuntimeError("generate failed: %s" % engine.status(g).get("error"))
         gen = st["generations"][-1]

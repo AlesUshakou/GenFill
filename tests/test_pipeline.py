@@ -55,7 +55,7 @@ class PipelineTests(unittest.TestCase):
         g = self.g
         self.assertTrue(engine.generate(g, "a red vintage car"))
         _join_workers()
-        st = state.loads(g["gf_state"].value())
+        st = engine.get_state(g)
         self.assertEqual(len(st["generations"]), 1, engine.status(g))
         gen = st["generations"][0]
         self.assertEqual(len(gen["files"]), 3)
@@ -87,7 +87,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(g.node(gfnode.REFORMAT_RECV)["box_width"].value(), w)
         self.assertEqual(g.node(gfnode.TRANSFORM_RECV)["translate"].value(), [x, y])
         self.assertTrue(g["gf_has_result"].value())
-        self.assertIn("[1/3]", g["gf_info"].value())
+        self.assertIn("(1/3)", g["gf_info"].value())
         self.assertTrue(read["file"].value().startswith(
             os.path.join(self.tmp, "genfill_cache").replace("\\", "/")))
 
@@ -99,13 +99,63 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(thumbs[0]["prompt"], "")          # newest first, selected
         self.assertTrue(thumbs[0]["selected"])
         engine.step(g, 1)
-        self.assertIn("[2/6]", g["gf_info"].value())
+        self.assertIn("(2/6)", g["gf_info"].value())
         engine.select(g, 0, 2)
         self.assertTrue(g.node(gfnode.READ_RESULT)["file"].value().endswith("var_03.png"))
         path = engine.thumbnails(g)[5]["path"]
         engine.delete_variation(g, 0, 2)
         self.assertFalse(os.path.exists(path))
         self.assertEqual(len(engine.thumbnails(g)), 5)
+
+    def test_state_knob_has_no_tcl_characters(self):
+        engine.generate(self.g, "a [bracketed] {prompt} $var", blocking=True)
+        raw = self.g["gf_state"].value()
+        self.assertTrue(raw.startswith("b64:"))
+        for ch in "[]{}$":
+            self.assertNotIn(ch, raw)
+            self.assertNotIn(ch, self.g["gf_info"].value())
+        self.assertEqual(engine.get_state(self.g)["generations"][0]["prompt"],
+                         "a [bracketed] {prompt} $var")
+        # Old plain-JSON state still loads.
+        self.assertEqual(engine.decode_state('{"generations": []}')["generations"], [])
+
+    def test_missing_key_reports_instead_of_silently_returning(self):
+        from unittest import mock
+        import genfill.ui
+        stability_label = [l for l in gfnode.backend_labels() if "Stability" in l][0]
+        self.g["gf_backend"].setValue(stability_label)
+        fake_settings = mock.MagicMock()
+        fake_settings.show.return_value = False
+        with mock.patch.dict(sys.modules, {"genfill.ui.settings": fake_settings}), \
+                mock.patch.object(genfill.ui, "settings", fake_settings, create=True), \
+                mock.patch("genfill.config.get_api_key", return_value=""):
+            self.assertFalse(engine.generate(self.g, "x"))
+        self.assertTrue(fake_settings.show.called)
+        self.assertIn("No API key", engine.status(self.g)["error"])
+        self.assertFalse(engine.is_running(self.g))
+
+    def test_worker_never_leaves_node_running(self):
+        from unittest import mock
+        with mock.patch.object(fake_nuke, "executeInMainThread", lambda fn, args=(): None):
+            engine.generate(self.g, "x")      # result never gets dispatched back
+            _join_workers()
+        # dispatch "happened" (it was swallowed), so status is still running here;
+        # simulate a crash inside the worker instead:
+        engine._set_status(engine._uid(self.g), running=False, error="")
+        with mock.patch.object(engine.backends.get("mock"), "generate",
+                               side_effect=SystemError("boom")):
+            engine.generate(self.g, "x", blocking=True)
+        self.assertFalse(engine.is_running(self.g))
+        self.assertIn("boom", engine.status(self.g)["error"])
+
+    def test_log_file_written(self):
+        from genfill import log as gflog
+        engine.generate(self.g, "logged prompt", blocking=True)
+        for h in gflog.get().handlers:
+            h.flush()
+        text = open(gflog.log_path(), encoding="utf-8").read()
+        self.assertIn("Generate clicked", text)
+        self.assertIn("logged prompt", text)
 
     def test_empty_selection_is_reported(self):
         fake_nuke.SELECTION_BOX[:] = [0, 0, 0, 0]
