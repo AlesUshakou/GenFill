@@ -19,4 +19,5 @@ desktop.ini
 # GenFill build/test artefacts
 test_output/
 nuke/python/genfill/build_info.json
+dist/
 setup_git.bat

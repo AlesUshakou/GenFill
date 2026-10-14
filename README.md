@@ -52,6 +52,30 @@ Current version: **0.7.1** (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## Install
 
+### Easiest: GenFill Setup
+
+Run **GenFill-Setup.exe** (or **`installers\GenFill-Setup.cmd`** from this repo). One window
+installs everything:
+
+- downloads the latest GenFill from GitHub (no git needed) and adds it to the Nuke versions you
+  pick (all of them by default),
+- optionally installs the free local AI in the same go, with the model size picked from your GPU
+  and a live progress bar for the ~30 GB download,
+- shows the Nuke versions it found, with buttons to start one when it's done.
+
+Run it again to update or repair. It also appears in Windows **Settings > Apps** as
+*GenFill for Nuke*, where you can uninstall it (optionally with the local AI and your settings).
+Build the exe with `installers\build_setup.ps1` (uses only what ships with Windows).
+
+<p>
+  <img src="docs/images/setup-welcome.png" width="49%" alt="GenFill Setup: welcome">
+  <img src="docs/images/setup-options.png" width="49%" alt="GenFill Setup: options">
+  <img src="docs/images/setup-progress.png" width="49%" alt="GenFill Setup: installing">
+  <img src="docs/images/setup-done.png" width="49%" alt="GenFill Setup: done">
+</p>
+
+The sections below are the manual / developer route.
+
 ### 1. The plugin
 
 Double-click **`installers\install.bat`**. It:

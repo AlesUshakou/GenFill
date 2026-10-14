@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **GenFill Setup**: a graphical installer for artists (`installers\GenFill-Setup.cmd`, or
+  `dist\GenFill-Setup.exe` built with `installers\build_setup.ps1`). Downloads the latest build
+  from GitHub, installs the plugin and optionally the free local AI in one window with live
+  progress, offers to start Nuke, and registers in Windows *Settings > Apps* for update,
+  repair and uninstall.
+
 ## 0.7.1 - 2026-10-13
 
 - README rewritten for the current build, with a full colour science section (encode / generate /
